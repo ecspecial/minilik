@@ -1,0 +1,37 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: minilik-backend
+    restart: unless-stopped
+    environment:
+      PORT: "3000"
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-https://mini-lik.ru,https://www.mini-lik.ru}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY in .env}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.4}
+      OPENAI_IMAGE_MODEL: ${OPENAI_IMAGE_MODEL:-gpt-image-1.5}
+      DEMO_USER: ${DEMO_USER:-demo}
+      DEMO_PASS: ${DEMO_PASS:-demo}
+    expose:
+      - "3000"
+    networks:
+      - minilik
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: minilik-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "127.0.0.1:8080:80"
+    networks:
+      - minilik
+
+networks:
+  minilik:
+    driver: bridge
