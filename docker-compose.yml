@@ -5,6 +5,10 @@ services:
       dockerfile: Dockerfile
     container_name: minilik-backend
     restart: unless-stopped
+    # Корневой .env рядом с compose: все пары KEY= подставляются в контейнер.
+    # Блок environment ниже перекрывает совпадающие ключи (и задаёт обязательные).
+    env_file:
+      - .env
     environment:
       PORT: "3000"
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-https://mini-lik.ru,https://www.mini-lik.ru}
