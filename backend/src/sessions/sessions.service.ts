@@ -483,11 +483,19 @@ export class SessionsService {
         throw new BadRequestException('Нет финансового блока (шаг 4)');
       }
       const t0 = performance.now();
+      // ai_calculation_doc дублирует сетки и раздувает запрос; в сессии он уже в pipeline.finance
       const finance_for_assembly = {
         lines: fin.lines,
         narrative: fin.narrative,
-        ai_calculation_doc: fin.ai_calculation_doc,
       };
+      const img = s.pipeline.generatedImageUrl;
+      const imgHint =
+        typeof img === 'string' && img.startsWith('data:')
+          ? `(data URL ~${Math.round(img.length / 1024)} KiB — не уходит в OpenAI)`
+          : String(img ?? 'none').slice(0, 120);
+      this.log.log(
+        `[${id}] final package: finance_doc omitted from LLM payload; image ref: ${imgHint}`,
+      );
       const finalPackage = await this.agents.runFinalPackageAssembly({
         master_json: analysis,
         constructor_json: s.pipeline.constructor,

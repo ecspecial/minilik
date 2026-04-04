@@ -220,12 +220,36 @@ export class AgentsService {
     generated_image_url: string | null | undefined;
   }): Promise<Record<string, unknown>> {
     const system = withGlobalRules(FINAL_PACKAGE_ASSEMBLY_SYSTEM);
+    const payload = {
+      ...input,
+      generated_image_url: this.normalizeImageRefForChat(
+        input.generated_image_url,
+      ),
+    };
+    const userText = `${JSON.stringify(payload, null, 2)}\n\nСобери финальный SKU package. В overview включи ссылку на изображение, если есть (для http/https — буквальную URL; для placeholder про base64 — опиши что визуал сгенерирован на шаге 7). Верни только JSON.`;
+    this.logger.log(
+      `runFinalPackageAssembly: user message ~${userText.length} chars (image field normalized if was data:)`,
+    );
     return this.chatJson('runFinalPackageAssembly', system, [
-      {
-        type: 'text',
-        text: `${JSON.stringify(input, null, 2)}\n\nСобери финальный SKU package. В overview включи ссылку на изображение, если есть. Верни только JSON.`,
-      },
+      { type: 'text', text: userText },
     ]);
+  }
+
+  /**
+   * Не отправляем мегабайты data:image/...;base64 в chat completion — модель всё равно не «видит» пиксели,
+   * а запрос раздувается и может висеть минутами или падать по контексту.
+   */
+  private normalizeImageRefForChat(
+    url: string | null | undefined,
+  ): string | null {
+    if (url == null || url === '') return null;
+    const u = String(url);
+    if (u.startsWith('https://') || u.startsWith('http://')) return u;
+    if (u.startsWith('data:')) {
+      const kb = Math.round(u.length / 1024);
+      return `[generated product image from step 7: inline base64 omitted (~${kb} KiB string); mention in overview that a catalog render was produced]`;
+    }
+    return u.length > 800 ? `${u.slice(0, 400)}… (truncated)` : u;
   }
 
   async runModuleRecalculation(input: {
