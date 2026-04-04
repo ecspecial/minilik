@@ -1,3 +1,7 @@
+import type {
+  ArtifactVersions,
+  IntakeContext,
+} from '../common/artifact-meta';
 import type { SalesChannel, Scenario } from '../constants/economy-stubs';
 import type { EconomyLine } from '../economy/economy-calculator';
 
@@ -6,7 +10,7 @@ export type SessionImage = {
   dataUrl: string;
 };
 
-/** Результат цепочки; поля появляются по мере выполнения шагов 1–5. */
+/** Результат цепочки; поля по мере шагов 1–8 (8 — финальный пакет). */
 export type PipelineResult = {
   constructor?: unknown;
   technologist?: unknown;
@@ -17,11 +21,17 @@ export type PipelineResult = {
       Record<Scenario, EconomyLine>
     >;
     narrative: string;
+    /** §5 структурированный слой поверх тех же цифр */
+    ai_calculation_doc?: unknown;
   };
   marketer?: unknown;
   photoStudio?: unknown;
-  /** null = шаг 5 выполнен, картинки нет; undefined = шаг ещё не выполняли */
+  /** null = шаг 7 выполнен, картинки нет */
   generatedImageUrl?: string | null;
+  /** §8 Final Package Assembly */
+  finalPackage?: unknown;
+  /** §12 опциональный интерпретатор лекал (ручной вызов API) */
+  patternRender?: unknown;
 };
 
 export type SessionState = {
@@ -29,9 +39,14 @@ export type SessionState = {
   images: SessionImage[];
   analysis: Record<string, unknown> | null;
   analysisApproved: boolean | null;
-  /** Частичный или полный результат; null до первого шага pipeline */
   pipeline: PipelineResult | null;
-  /** Последний успешно выполненный шаг цепочки (1…5); 0 — цепочка не начата или сброшена */
+  /** Последний успешно выполненный шаг (1…8) */
   pipelineMaxStep: number;
   createdAt: string;
+  /** Опциональный контекст для intake (§1.2) */
+  intakeContext?: IntakeContext;
+  /** Версии промптов/схем/модели (п.16 ТЗ) */
+  artifactVersions?: ArtifactVersions | null;
 };
+
+export type { ArtifactVersions, IntakeContext };

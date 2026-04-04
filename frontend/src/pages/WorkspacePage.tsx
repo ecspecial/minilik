@@ -7,6 +7,12 @@ import {
   analysisDecision,
   createSession,
   getSession,
+  type IntakeContextPayload,
+  mergeModule,
+  patchIntakeContext,
+  recalculateModule,
+  runMarketPriceEstimateTool,
+  runPatternRenderTool,
   runPipeline,
   runPipelineStep,
   setAuthToken,
@@ -22,41 +28,61 @@ type SessionPayload = {
   analysisApproved: boolean | null;
   pipeline: Record<string, unknown> | null;
   pipelineMaxStep?: number;
+  intakeContext?: IntakeContextPayload;
+  artifactVersions?: unknown;
 };
 
 const STORAGE_KEY = 'mvp_session_id';
 
-/** Что видит пользователь на каждом шаге цепочки после подтверждения */
+/** Шаги цепочки после подтверждения анализа (порядок из client-update) */
 const CHAIN_STEPS = [
   {
     step: 1,
-    title: 'Конструктор + технолог',
+    title: 'Конструктор + draft-лекала',
     userText:
-      'Пояснение лекал, кроя, мерок и швейной технологии: этапы, оборудование, риски.',
+      'Конструкция, детали кроя, мерки, ТЗ на лекала, preliminary patterns (не production-ready).',
   },
   {
     step: 2,
-    title: 'Закупщик',
+    title: 'Технолог',
     userText:
-      'Оценка ткани, фурнитуры, расхода и отходов — числа пойдут в расчёт экономики.',
+      'Операции, оборудование, швы и обработки — с опорой на конструктор.',
   },
   {
     step: 3,
-    title: 'Финансист',
+    title: 'Закупщик / материалы',
     userText:
-      'Таблицы WB / Ozon / сайт × три сценария (пессимист / база / оптимист) плюс текстовый разбор. Для WB в базе заложена сумма отчислений от цены 55% (комиссия+маркетинг+возвраты+эквайринг, логистика отдельно в ₽).',
+      'Ткани, фурнитура, расход, cost base для экономики (оценки помечать источником).',
   },
   {
     step: 4,
-    title: 'Маркетолог + фото-ТЗ',
+    title: 'Финансист',
     userText:
-      'SEO, описание, буллеты и техническое задание на съёмку (ракурсы, инфографика).',
+      'Сетки WB / Ozon / сайт на бэкенде + текстовый разбор ИИ. WB база: сумма % от цены ~55% (логистика отдельно).',
   },
   {
     step: 5,
-    title: 'Визуал',
+    title: 'Маркетолог',
     userText:
-      'Картинка по API (промпт жёстко привязан к распознанному типу изделия). Не участвует в цифрах.',
+      'SEO, буллеты, описание, позиционирование, brief для съёмки — только из подтверждённых продуктовых данных.',
+  },
+  {
+    step: 6,
+    title: 'Фото / визуал (промпты)',
+    userText:
+      'Промпты для каталога, белого фона, lifestyle — без искажения фасона (master + marketing).',
+  },
+  {
+    step: 7,
+    title: 'Генерация картинки',
+    userText:
+      'Изображение по API; тип изделия зафиксирован в промпте.',
+  },
+  {
+    step: 8,
+    title: 'Сборка финального пакета',
+    userText:
+      'Единый JSON поверх модулей, финдиска и сгенерированного изображения.',
   },
 ] as const;
 
@@ -98,7 +124,7 @@ export default function WorkspacePage() {
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  /** step-by-step: номер шага 1–5 во время запроса; null — нет активного шага */
+  /** step-by-step: номер шага 1–8 во время запроса; null — нет активного шага */
   const [pipelineLoadingStep, setPipelineLoadingStep] = useState<number | null>(
     null,
   );
@@ -106,6 +132,13 @@ export default function WorkspacePage() {
   const [chainMode, setChainMode] = useState<'progressive' | 'full'>(
     'progressive',
   );
+  const [intakeDraft, setIntakeDraft] = useState<IntakeContextPayload>({});
+  const [toolBusy, setToolBusy] = useState<string | null>(null);
+  const [lastMarketEstimate, setLastMarketEstimate] = useState<unknown>(null);
+  const [advRecalcModule, setAdvRecalcModule] = useState('constructor');
+  const [advRecalcInputsJson, setAdvRecalcInputsJson] = useState('{}');
+  const [advMergeModule, setAdvMergeModule] = useState('constructor');
+  const [advMergeEditsJson, setAdvMergeEditsJson] = useState('{}');
 
   const token = localStorage.getItem('mvp_token');
   useEffect(() => {
@@ -123,6 +156,11 @@ export default function WorkspacePage() {
     const data = (await getSession(id)) as SessionPayload;
     setSession(data);
   }, []);
+
+  useEffect(() => {
+    if (!session?.id) return;
+    setIntakeDraft({ ...(session.intakeContext ?? {}) });
+  }, [session?.id]);
 
   useEffect(() => {
     if (!token) return;
@@ -222,6 +260,100 @@ export default function WorkspacePage() {
     }
   }
 
+  async function onSaveIntake() {
+    if (!sessionId) return;
+    setErr(null);
+    setBusy('intake');
+    try {
+      await patchIntakeContext(sessionId, intakeDraft);
+      await refresh(sessionId);
+    } catch {
+      setErr('Не удалось сохранить контекст intake.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function onPatternRenderTool() {
+    if (!sessionId) return;
+    setErr(null);
+    setToolBusy('pattern');
+    try {
+      await runPatternRenderTool(sessionId);
+      await refresh(sessionId);
+    } catch {
+      setErr('Инструмент «лекала → рендер» недоступен или данных недостаточно.');
+    } finally {
+      setToolBusy(null);
+    }
+  }
+
+  async function onMarketPriceTool() {
+    if (!sessionId) return;
+    setErr(null);
+    setToolBusy('market');
+    try {
+      const res = await runMarketPriceEstimateTool(sessionId);
+      setLastMarketEstimate(res);
+    } catch {
+      setErr('Оценка рыночных цен недоступна или нет данных закупщика.');
+      setLastMarketEstimate(null);
+    } finally {
+      setToolBusy(null);
+    }
+  }
+
+  async function onRecalculateModule() {
+    if (!sessionId) return;
+    let updatedInputs: Record<string, unknown> | undefined;
+    try {
+      const parsed = JSON.parse(advRecalcInputsJson || '{}') as unknown;
+      updatedInputs =
+        parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)
+          : {};
+    } catch {
+      setErr('JSON «новые входы» для пересчёта должен быть объектом.');
+      return;
+    }
+    setErr(null);
+    setBusy('recalc');
+    try {
+      await recalculateModule(sessionId, advRecalcModule, updatedInputs);
+      await refresh(sessionId);
+    } catch {
+      setErr('Пересчёт модуля не выполнен (проверьте имя модуля и шаги цепочки).');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function onMergeModule() {
+    if (!sessionId) return;
+    let userEdits: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(advMergeEditsJson || '{}') as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        setErr('Правки для merge должны быть JSON-объектом.');
+        return;
+      }
+      userEdits = parsed as Record<string, unknown>;
+    } catch {
+      setErr('Некорректный JSON правок для merge.');
+      return;
+    }
+    setErr(null);
+    setBusy('merge');
+    try {
+      await mergeModule(sessionId, advMergeModule, userEdits);
+      await refresh(sessionId);
+    } catch {
+      setErr('Слияние правок не выполнено.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function onDecision(approved: boolean) {
     if (!sessionId) return;
     setErr(null);
@@ -258,10 +390,10 @@ export default function WorkspacePage() {
 
     setBusy('pipeline');
     try {
-      for (let i = 1; i <= 5; i++) {
+      for (let i = 1; i <= 8; i++) {
         setPipelineLoadingStep(i);
         const meta = CHAIN_STEPS[i - 1];
-        document.title = `MiniLik — шаг ${i}/5: ${meta.title}`;
+        document.title = `MiniLik — шаг ${i}/8: ${meta.title}`;
         await runPipelineStep(sessionId, i);
         await refresh(sessionId);
       }
@@ -298,7 +430,7 @@ export default function WorkspacePage() {
         ? 2
         : session.analysisApproved == null
           ? 3
-          : maxPipeline < 5 || busy === 'pipeline'
+          : maxPipeline < 8 || busy === 'pipeline'
             ? 4
             : 5;
 
@@ -365,7 +497,7 @@ export default function WorkspacePage() {
             { n: 1, t: 'Фото', d: 'Загрузка 1–3 снимков' },
             { n: 2, t: 'Анализ ИИ', d: 'Распознавание по фото' },
             { n: 3, t: 'Ваше «да»', d: 'Подтверждение карточки' },
-            { n: 4, t: 'Цепочка ИИ', d: '5 внутренних шагов' },
+            { n: 4, t: 'Цепочка ИИ', d: '8 внутренних шагов' },
             { n: 5, t: 'Итог', d: 'Все блоки на экране' },
           ].map((it) => (
             <div
@@ -382,6 +514,72 @@ export default function WorkspacePage() {
         </nav>
 
         {err && <p className="err">{err}</p>}
+
+        <section className="card panel">
+          <div className="panel-header">
+            <span className="panel-badge">До анализа</span>
+            <h2>Контекст до анализа (опционально)</h2>
+          </div>
+          <p className="panel-desc">
+            Уточнения бренда, коллекции, канала и цены попадают в промпт анализа и
+            закупщика. Можно оставить пустым.
+          </p>
+          <div
+            className="grid-econ"
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+              gap: 12,
+            }}
+          >
+            {(
+              [
+                ['brand', 'Бренд'],
+                ['collection', 'Коллекция'],
+                ['target_channel_hint', 'Канал (подсказка)'],
+                ['price_hint', 'Цена (подсказка)'],
+                ['age_hint', 'Возраст (подсказка)'],
+                ['season_hint', 'Сезон (подсказка)'],
+              ] as const
+            ).map(([key, label]) => (
+              <label key={key} className="muted" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {label}
+                <input
+                  type="text"
+                  className="pre"
+                  style={{ padding: 8, fontFamily: 'inherit' }}
+                  value={String(intakeDraft[key] ?? '')}
+                  onChange={(e) =>
+                    setIntakeDraft((d) => ({ ...d, [key]: e.target.value }))
+                  }
+                  disabled={busy !== null || !sessionId}
+                />
+              </label>
+            ))}
+          </div>
+          <label className="muted" style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
+            Комментарий
+            <textarea
+              className="pre"
+              style={{ minHeight: 72, padding: 8, fontFamily: 'inherit' }}
+              value={String(intakeDraft.user_comment ?? '')}
+              onChange={(e) =>
+                setIntakeDraft((d) => ({ ...d, user_comment: e.target.value }))
+              }
+              disabled={busy !== null || !sessionId}
+            />
+          </label>
+          <div className="row" style={{ marginTop: 12 }}>
+            <button
+              type="button"
+              className="secondary"
+              onClick={onSaveIntake}
+              disabled={!sessionId || busy !== null}
+            >
+              {busy === 'intake' ? 'Сохранение…' : 'Сохранить контекст'}
+            </button>
+          </div>
+        </section>
 
         <section className="card panel">
           <div className="panel-header">
@@ -602,12 +800,12 @@ export default function WorkspacePage() {
         <section className="card panel">
           <div className="panel-header">
             <span className="panel-badge">Шаг 4</span>
-            <h2>ИИ-цепочка (5 этапов)</h2>
+            <h2>ИИ-цепочка (8 этапов)</h2>
           </div>
           <p className="panel-desc">
-            После подтверждения анализа система вызывает пять блоков: конструктор
-            и технолог параллельно, затем закупщик, финансист, маркетолог с ТЗ на
-            фото, и генерация картинки.
+            После подтверждения: конструктор → технолог → закупщик → финансист →
+            маркетолог → фото-промпты → генерация изделия → финальный пакет,
+            как в ТЗ MiniLik / client-update.
           </p>
 
           <p className="muted" style={{ marginBottom: 8 }}>
@@ -647,7 +845,7 @@ export default function WorkspacePage() {
             busy === 'pipeline' &&
             pipelineLoadingStep !== null && (
               <SpinnerBlock
-                label={`Шаг ${pipelineLoadingStep} из 5: ${CHAIN_STEPS[pipelineLoadingStep - 1].title}. ${CHAIN_STEPS[pipelineLoadingStep - 1].userText}`}
+                label={`Шаг ${pipelineLoadingStep} из 8: ${CHAIN_STEPS[pipelineLoadingStep - 1].title}. ${CHAIN_STEPS[pipelineLoadingStep - 1].userText}`}
               />
             )}
 
@@ -665,12 +863,132 @@ export default function WorkspacePage() {
                 ? 'Идёт обработка…'
                 : 'Запустить ИИ-отчёт'}
             </button>
-            {maxPipeline > 0 && maxPipeline < 5 && !busy && (
+            {maxPipeline > 0 && maxPipeline < 8 && !busy && (
               <span className="muted">
-                Готово шагов цепочки: {maxPipeline}/5
+                Готово шагов цепочки: {maxPipeline}/8
               </span>
             )}
+            {maxPipeline >= 8 && !busy && (
+              <span className="muted">Цепочка завершена (8/8)</span>
+            )}
           </div>
+        </section>
+
+        <section className="card panel">
+          <div className="panel-header">
+            <span className="panel-badge">Инструменты</span>
+            <h2>Дополнительные инструменты</h2>
+          </div>
+          <p className="panel-desc">
+            Интерпретация draft-лекал и рыночные ориентиры по данным закупщика —
+            отдельные вызовы API после соответствующих шагов.
+          </p>
+          <div className="row">
+            <button
+              type="button"
+              className="secondary"
+              onClick={onPatternRenderTool}
+              disabled={
+                !sessionId ||
+                toolBusy !== null ||
+                busy !== null ||
+                !pipeline?.constructor
+              }
+            >
+              {toolBusy === 'pattern' ? 'Запрос…' : 'Лекала → инструкции рендера'}
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={onMarketPriceTool}
+              disabled={
+                !sessionId ||
+                toolBusy !== null ||
+                busy !== null ||
+                !pipeline?.purchasing
+              }
+            >
+              {toolBusy === 'market' ? 'Запрос…' : 'Ориентиры рыночных цен'}
+            </button>
+          </div>
+          {lastMarketEstimate != null && (
+            <pre className="pre" style={{ marginTop: 12, maxHeight: 320 }}>
+              {JSON.stringify(lastMarketEstimate, null, 2)}
+            </pre>
+          )}
+        </section>
+
+        <section className="card panel">
+          <div className="panel-header">
+            <span className="panel-badge">Правки</span>
+            <h2>Пересчёт модуля и ручные правки</h2>
+          </div>
+          <p className="panel-desc">
+            Имена модулей: <code>constructor</code>, <code>technologist</code>,{' '}
+            <code>purchasing</code>, <code>marketer</code>, <code>photoStudio</code>.
+            Finance через этот UI не пересчитывается — повторите шаг 4 цепочки.
+          </p>
+          <div className="row" style={{ flexWrap: 'wrap', gap: 12 }}>
+            <label className="muted">
+              Модуль
+              <input
+                type="text"
+                value={advRecalcModule}
+                onChange={(e) => setAdvRecalcModule(e.target.value)}
+                disabled={busy !== null}
+                style={{ marginLeft: 8 }}
+              />
+            </label>
+          </div>
+          <label className="muted" style={{ display: 'block', marginTop: 8 }}>
+            Новые входы (JSON-объект)
+            <textarea
+              className="pre"
+              style={{ width: '100%', minHeight: 80, marginTop: 4 }}
+              value={advRecalcInputsJson}
+              onChange={(e) => setAdvRecalcInputsJson(e.target.value)}
+              disabled={busy !== null}
+            />
+          </label>
+          <button
+            type="button"
+            className="secondary"
+            onClick={onRecalculateModule}
+            disabled={!sessionId || busy !== null}
+          >
+            {busy === 'recalc' ? 'Пересчёт…' : 'Пересчитать модуль'}
+          </button>
+          <hr style={{ margin: '16px 0', borderColor: 'var(--border)' }} />
+          <div className="row" style={{ flexWrap: 'wrap', gap: 12 }}>
+            <label className="muted">
+              Модуль для merge
+              <input
+                type="text"
+                value={advMergeModule}
+                onChange={(e) => setAdvMergeModule(e.target.value)}
+                disabled={busy !== null}
+                style={{ marginLeft: 8 }}
+              />
+            </label>
+          </div>
+          <label className="muted" style={{ display: 'block', marginTop: 8 }}>
+            Правки пользователя (JSON-объект)
+            <textarea
+              className="pre"
+              style={{ width: '100%', minHeight: 80, marginTop: 4 }}
+              value={advMergeEditsJson}
+              onChange={(e) => setAdvMergeEditsJson(e.target.value)}
+              disabled={busy !== null}
+            />
+          </label>
+          <button
+            type="button"
+            className="secondary"
+            onClick={onMergeModule}
+            disabled={!sessionId || busy !== null}
+          >
+            {busy === 'merge' ? 'Слияние…' : 'Слить правки'}
+          </button>
         </section>
 
         {pipeline?.constructor != null && (
@@ -719,6 +1037,36 @@ export default function WorkspacePage() {
               <FinanceGrid finance={pipeline.finance as Record<string, unknown>} />
             </section>
           )}
+
+        {pipeline != null &&
+          typeof pipeline.finance === 'object' &&
+          pipeline.finance !== null &&
+          (pipeline.finance as { ai_calculation_doc?: unknown })
+            .ai_calculation_doc != null && (
+            <JsonBlock
+              id="module-finance-doc"
+              title="Структурированный финансовый документ (AI)"
+              data={
+                (pipeline.finance as { ai_calculation_doc?: unknown })
+                  .ai_calculation_doc
+              }
+            />
+          )}
+
+        {pipeline?.finalPackage != null && (
+          <JsonBlock
+            id="module-final-package"
+            title="Финальный пакет"
+            data={pipeline.finalPackage}
+          />
+        )}
+        {pipeline?.patternRender != null && (
+          <JsonBlock
+            id="module-pattern-render"
+            title="Интерпретация лекал для рендера"
+            data={pipeline.patternRender}
+          />
+        )}
 
         {pipeline?.marketer != null && (
           <JsonBlock

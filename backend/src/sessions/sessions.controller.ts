@@ -6,19 +6,73 @@ import {
   Param,
   ParseIntPipe,
   ParseUUIDPipe,
+  Patch,
   Post,
   UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
-import { IsBoolean } from 'class-validator';
+import {
+  IsBoolean,
+  IsObject,
+  IsOptional,
+  IsString,
+} from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import type { IntakeContext } from './sessions.types';
 import { SessionsService } from './sessions.service';
 
 class AnalysisDecisionDto {
   @IsBoolean()
   approved!: boolean;
+}
+
+class IntakeContextPatchDto implements IntakeContext {
+  @IsOptional()
+  @IsString()
+  brand?: string;
+
+  @IsOptional()
+  @IsString()
+  collection?: string;
+
+  @IsOptional()
+  @IsString()
+  user_comment?: string;
+
+  @IsOptional()
+  @IsString()
+  target_channel_hint?: string;
+
+  @IsOptional()
+  @IsString()
+  price_hint?: string;
+
+  @IsOptional()
+  @IsString()
+  age_hint?: string;
+
+  @IsOptional()
+  @IsString()
+  season_hint?: string;
+}
+
+class RecalculateModuleDto {
+  @IsString()
+  targetModule!: string;
+
+  @IsOptional()
+  @IsObject()
+  updatedInputs?: Record<string, unknown>;
+}
+
+class MergeModuleDto {
+  @IsString()
+  module!: string;
+
+  @IsObject()
+  userEdits!: Record<string, unknown>;
 }
 
 @Controller('sessions')
@@ -34,6 +88,15 @@ export class SessionsController {
   @Get(':id')
   get(@Param('id', ParseUUIDPipe) id: string) {
     return this.sessions.get(id);
+  }
+
+  /** §1.2 опциональный контекст до анализа (мержится в сессию). */
+  @Patch(':id/intake-context')
+  patchIntakeContext(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: IntakeContextPatchDto,
+  ) {
+    return this.sessions.setIntakeContext(id, body);
   }
 
   @Post(':id/images')
@@ -58,14 +121,14 @@ export class SessionsController {
     return this.sessions.setAnalysisDecision(id, body.approved);
   }
 
-  /** Пошаговая цепочка: шаг 1…5 (шаг 1 сбрасывает предыдущий отчёт). */
+  /** Пошаговая цепочка: шаг 1…8 (шаг 1 сбрасывает предыдущий отчёт; 8 — финальный пакет). */
   @Post(':id/pipeline/step/:step')
   pipelineStep(
     @Param('id', ParseUUIDPipe) id: string,
     @Param('step', ParseIntPipe) step: number,
   ) {
-    if (step < 1 || step > 5) {
-      throw new BadRequestException('step должен быть от 1 до 5');
+    if (step < 1 || step > 8) {
+      throw new BadRequestException('step должен быть от 1 до 8');
     }
     return this.sessions.runPipelineStep(id, step);
   }
@@ -73,5 +136,39 @@ export class SessionsController {
   @Post(':id/pipeline')
   pipeline(@Param('id', ParseUUIDPipe) id: string) {
     return this.sessions.runPipeline(id);
+  }
+
+  /** §9 пересчёт одного модуля по новым входам. */
+  @Post(':id/pipeline/recalculate')
+  recalculateModule(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: RecalculateModuleDto,
+  ) {
+    return this.sessions.recalculateModule(
+      id,
+      body.targetModule,
+      body.updatedInputs,
+    );
+  }
+
+  /** §11 слияние ручных правок с JSON модуля. */
+  @Post(':id/merge-module')
+  mergeModule(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: MergeModuleDto,
+  ) {
+    return this.sessions.mergeHumanEdits(id, body.module, body.userEdits);
+  }
+
+  /** §12 draft-лекала → инструкции рендера (сохраняется в session.pipeline.patternRender). */
+  @Post(':id/tools/pattern-render')
+  patternRender(@Param('id', ParseUUIDPipe) id: string) {
+    return this.sessions.runPatternRender(id);
+  }
+
+  /** §13 рыночные ориентиры (ответ без сохранения в сессию). */
+  @Post(':id/tools/market-price-estimate')
+  marketPriceEstimate(@Param('id', ParseUUIDPipe) id: string) {
+    return this.sessions.runMarketPriceHelp(id);
   }
 }

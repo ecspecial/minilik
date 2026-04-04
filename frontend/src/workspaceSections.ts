@@ -5,9 +5,12 @@ export const WORKSPACE_SECTION_IDS = {
   technologist: 'module-technologist',
   purchasing: 'module-purchasing',
   finance: 'module-finance',
+  financeDoc: 'module-finance-doc',
   marketer: 'module-marketer',
   photo: 'module-photo',
   visual: 'module-visual',
+  finalPackage: 'module-final-package',
+  patternRender: 'module-pattern-render',
 } as const;
 
 export type WorkspaceSectionKey = keyof typeof WORKSPACE_SECTION_IDS;
