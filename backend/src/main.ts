@@ -1,5 +1,7 @@
+import { Logger, ValidationPipe, type LogLevel } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe, type LogLevel } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
+import type { NextFunction, Request, Response } from 'express';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
@@ -8,9 +10,21 @@ async function bootstrap() {
     ? ['error', 'warn', 'log', 'debug', 'verbose']
     : ['error', 'warn', 'log'];
 
-  const app = await NestFactory.create(AppModule, {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     logger: loggerLevels,
   });
+
+  const httpLog = new Logger('HTTP');
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    const t0 = Date.now();
+    res.on('finish', () => {
+      httpLog.log(
+        `${req.method} ${req.originalUrl ?? req.url} ${res.statusCode} +${Date.now() - t0}ms`,
+      );
+    });
+    next();
+  });
+
   const originRaw = process.env.FRONTEND_ORIGIN ?? 'http://localhost:5173';
   const origin = originRaw.includes(',')
     ? originRaw.split(',').map((s) => s.trim())
@@ -29,5 +43,7 @@ async function bootstrap() {
   );
   const port = process.env.PORT ?? 3000;
   await app.listen(port);
+  const boot = new Logger('Bootstrap');
+  boot.log(`listening on :${port} (NODE_ENV=${process.env.NODE_ENV ?? ''})`);
 }
 bootstrap();
