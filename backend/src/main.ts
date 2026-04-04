@@ -17,14 +17,13 @@ async function bootstrap() {
   const httpLog = new Logger('HTTP');
   app.use((req: Request, res: Response, next: NextFunction) => {
     const path = req.originalUrl ?? req.url;
-    // В Docker иногда видны только стартовые логи Nest; stderr + строка сразу по запросу,
-    // чтобы отличить «нет трафика в контейнер» от «буферизация Logger».
-    console.error(`[HTTP] -> ${req.method} ${path}`);
+    res.setHeader('X-Minilik-Backend', 'docker');
+
     const t0 = Date.now();
     res.on('finish', () => {
-      const line = `${req.method} ${path} ${res.statusCode} +${Date.now() - t0}ms`;
-      httpLog.log(line);
-      console.error(`[HTTP] <- ${line}`);
+      httpLog.log(
+        `${req.method} ${path} ${res.statusCode} +${Date.now() - t0}ms`,
+      );
     });
     next();
   });

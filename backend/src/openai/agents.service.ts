@@ -13,7 +13,6 @@ import { formatErr, withTiming } from './ai-logger';
 import {
   BUYER_SYSTEM,
   CONSTRUCTOR_SYSTEM,
-  FINAL_PACKAGE_ASSEMBLY_SYSTEM,
   FINANCE_CALC_DOC_SYSTEM,
   FINANCE_NARRATIVE_SYSTEM,
   HUMAN_EDIT_MERGE_SYSTEM,
@@ -207,49 +206,6 @@ export class AgentsService {
         text: `master_json:\n${JSON.stringify(masterJson, null, 2)}\n\nmarketing_json:\n${JSON.stringify(marketingJson, null, 2)}\n\nСформируй визуальный пакет промптов. Верни только JSON.`,
       },
     ]);
-  }
-
-  async runFinalPackageAssembly(input: {
-    master_json: Record<string, unknown>;
-    constructor_json: unknown;
-    technologist_json: unknown;
-    buyer_json: unknown;
-    finance_json: unknown;
-    marketing_json: unknown;
-    photo_json: unknown;
-    generated_image_url: string | null | undefined;
-  }): Promise<Record<string, unknown>> {
-    const system = withGlobalRules(FINAL_PACKAGE_ASSEMBLY_SYSTEM);
-    const payload = {
-      ...input,
-      generated_image_url: this.normalizeImageRefForChat(
-        input.generated_image_url,
-      ),
-    };
-    const userText = `${JSON.stringify(payload, null, 2)}\n\nСобери финальный SKU package. В overview включи ссылку на изображение, если есть (для http/https — буквальную URL; для placeholder про base64 — опиши что визуал сгенерирован на шаге 7). Верни только JSON.`;
-    this.logger.log(
-      `runFinalPackageAssembly: user message ~${userText.length} chars (image field normalized if was data:)`,
-    );
-    return this.chatJson('runFinalPackageAssembly', system, [
-      { type: 'text', text: userText },
-    ]);
-  }
-
-  /**
-   * Не отправляем мегабайты data:image/...;base64 в chat completion — модель всё равно не «видит» пиксели,
-   * а запрос раздувается и может висеть минутами или падать по контексту.
-   */
-  private normalizeImageRefForChat(
-    url: string | null | undefined,
-  ): string | null {
-    if (url == null || url === '') return null;
-    const u = String(url);
-    if (u.startsWith('https://') || u.startsWith('http://')) return u;
-    if (u.startsWith('data:')) {
-      const kb = Math.round(u.length / 1024);
-      return `[generated product image from step 7: inline base64 omitted (~${kb} KiB string); mention in overview that a catalog render was produced]`;
-    }
-    return u.length > 800 ? `${u.slice(0, 400)}… (truncated)` : u;
   }
 
   async runModuleRecalculation(input: {

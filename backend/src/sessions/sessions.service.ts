@@ -119,6 +119,62 @@ function extractPurchasingCosts(p: Record<string, unknown>): {
   };
 }
 
+/**
+ * Шаг 8 без LLM: тот же каркас JSON, что ожидался от Final Package Assembly.
+ * Вкладки — ссылки на уже посчитанные модули; overview — краткая сводка из master.
+ */
+function buildFinalPackageLocally(
+  sessionId: string,
+  analysis: Record<string, unknown>,
+  pipeline: NonNullable<PipelineResult>,
+): Record<string, unknown> {
+  const id =
+    (typeof analysis.sku_hypothesis_id === 'string' && analysis.sku_hypothesis_id) ||
+    `sku-hyp-${sessionId.replace(/-/g, '').slice(0, 12)}`;
+  const img = pipeline.generatedImageUrl;
+  const imgRef =
+    typeof img === 'string'
+      ? img.startsWith('data:')
+        ? `inline_image:data-url;~${Math.round(img.length / 1024)}KiB`
+        : img.slice(0, 500)
+      : null;
+
+  const unresolved: string[] = [];
+  const notes = analysis.confidenceNotes;
+  if (typeof notes === 'string' && notes.trim()) unresolved.push(notes.trim());
+
+  return {
+    sku_hypothesis_id: id,
+    status: 'assembled_local',
+    assembled_at: new Date().toISOString(),
+    consistency_check: {
+      is_consistent: true,
+      issues: [
+        'Сборка детерминированная на бэкенде без повторной проверки ИИ; противоречия между модулями не анализировались автоматически.',
+      ],
+    },
+    tabs: {
+      overview: {
+        product_type: analysis.productType,
+        season: analysis.season,
+        silhouette: analysis.silhouette,
+        details: analysis.details,
+        materials: analysis.materials,
+        generated_image_ref: imgRef,
+        image_present: Boolean(img),
+      },
+      constructor: pipeline.constructor ?? {},
+      technologist: pipeline.technologist ?? {},
+      buyer: pipeline.purchasing ?? {},
+      finance: pipeline.finance ?? {},
+      marketing: pipeline.marketer ?? {},
+      photo: pipeline.photoStudio ?? {},
+    },
+    unresolved_issues: unresolved,
+    export_readiness: { pdf_ready: false, json_ready: true },
+  };
+}
+
 function resolvePipelineKey(
   moduleName: string,
 ): keyof Omit<PipelineResult, 'finance'> | 'finance' {
@@ -477,39 +533,15 @@ export class SessionsService {
     }
 
     if (step === 8) {
-      this.log.log(`[${id}] pipeline step 8/8: Final Package Assembly`);
-      const fin = s.pipeline.finance;
-      if (!fin) {
+      this.log.log(`[${id}] pipeline step 8/8: Final Package (локальная сборка, без LLM)`);
+      if (!s.pipeline.finance) {
         throw new BadRequestException('Нет финансового блока (шаг 4)');
       }
       const t0 = performance.now();
-      // ai_calculation_doc дублирует сетки и раздувает запрос; в сессии он уже в pipeline.finance
-      const finance_for_assembly = {
-        lines: fin.lines,
-        narrative: fin.narrative,
-      };
-      const img = s.pipeline.generatedImageUrl;
-      const imgHint =
-        typeof img === 'string' && img.startsWith('data:')
-          ? `(data URL ~${Math.round(img.length / 1024)} KiB — не уходит в OpenAI)`
-          : String(img ?? 'none').slice(0, 120);
-      this.log.log(
-        `[${id}] final package: finance_doc omitted from LLM payload; image ref: ${imgHint}`,
-      );
-      const finalPackage = await this.agents.runFinalPackageAssembly({
-        master_json: analysis,
-        constructor_json: s.pipeline.constructor,
-        technologist_json: s.pipeline.technologist,
-        buyer_json: s.pipeline.purchasing,
-        finance_json: finance_for_assembly,
-        marketing_json: s.pipeline.marketer,
-        photo_json: s.pipeline.photoStudio,
-        generated_image_url: s.pipeline.generatedImageUrl ?? null,
-      });
-      s.pipeline.finalPackage = finalPackage;
+      s.pipeline.finalPackage = buildFinalPackageLocally(id, analysis, s.pipeline);
       s.pipelineMaxStep = 8;
       this.log.log(
-        `[${id}] final package за ${Math.round(performance.now() - t0)}ms`,
+        `[${id}] final package (local) за ${Math.round(performance.now() - t0)}ms`,
       );
     }
   }

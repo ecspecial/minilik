@@ -22,6 +22,9 @@ services:
       LOG_VERBOSE_AI: ${LOG_VERBOSE_AI:-}
     expose:
       - "3000"
+    # Отладка на хосте: сравните с трафиком через 8080. curl 127.0.0.1:13000/api/...
+    ports:
+      - "127.0.0.1:13000:3000"
     networks:
       - minilik
 
