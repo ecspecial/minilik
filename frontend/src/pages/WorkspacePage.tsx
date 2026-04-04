@@ -1,3 +1,4 @@
+import axios from 'axios';
 import { useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { ThemeToggle } from '../ThemeToggle';
@@ -153,8 +154,30 @@ export default function WorkspacePage() {
   }, [token, nav, location.hash]);
 
   const refresh = useCallback(async (id: string) => {
-    const data = (await getSession(id)) as SessionPayload;
-    setSession(data);
+    try {
+      const data = (await getSession(id)) as SessionPayload;
+      setSession(data);
+    } catch (e) {
+      // Бэкенд хранит сессии в памяти: после перезапуска старый UUID даёт 404
+      if (axios.isAxiosError(e) && e.response?.status === 404) {
+        sessionStorage.removeItem(STORAGE_KEY);
+        try {
+          const { id: newId } = await createSession();
+          sessionStorage.setItem(STORAGE_KEY, newId);
+          setSessionId(newId);
+          const data = (await getSession(newId)) as SessionPayload;
+          setSession(data);
+        } catch {
+          setSessionId(null);
+          setSession(null);
+          setErr(
+            'Сессия на сервере недоступна (возможен перезапуск). Не удалось создать новую.',
+          );
+        }
+        return;
+      }
+      throw e;
+    }
   }, []);
 
   useEffect(() => {
