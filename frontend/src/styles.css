@@ -1248,6 +1248,119 @@ html[data-theme='dark'] .landing-tile-desc {
   }
 }
 
+/* Кабинет: история сессий */
+.session-history-bar {
+  margin-bottom: 1rem;
+}
+
+.session-history-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.75rem 1rem;
+  justify-content: space-between;
+}
+
+.session-history-details {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+.session-history-summary {
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.95rem;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.session-history-summary::-webkit-details-marker {
+  display: none;
+}
+
+.session-history-count {
+  font-weight: 600;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+}
+
+.session-history-empty {
+  margin: 0.5rem 0 0;
+  font-size: 0.88rem;
+  color: var(--text-muted);
+}
+
+.session-history-list {
+  margin: 0.65rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.session-history-pill {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease;
+}
+
+.session-history-pill:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.session-history-pill:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.session-history-pill--current {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.session-history-pill-label {
+  font-weight: 700;
+  font-size: 0.86rem;
+}
+
+.session-history-pill-meta {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+.session-history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.session-history-hint {
+  margin: 0.65rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
 /* Кабинет: ответы модулей в стиле чата */
 .panel-badge--soft {
   opacity: 0.85;

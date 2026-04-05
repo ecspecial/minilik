@@ -25,6 +25,21 @@ export async function createSession() {
   return data;
 }
 
+export type SessionListItem = {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+  pipelineMaxStep: number;
+  analysisApproved: boolean | null;
+  label: string;
+  imageCount: number;
+};
+
+export async function listSessions() {
+  const { data } = await api.get<{ sessions: SessionListItem[] }>('/sessions');
+  return data.sessions;
+}
+
 export async function getSession(id: string) {
   const { data } = await api.get<unknown>(`/sessions/${id}`);
   return data;

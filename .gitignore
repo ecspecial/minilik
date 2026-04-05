@@ -44,5 +44,8 @@ Desktop.ini
 # Docker overrides (локально)
 docker-compose.override.yml
 
+# Persisted MiniLik sessions (local dev)
+backend/data/
+
 # Misc
 *.local

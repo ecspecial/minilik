@@ -11,6 +11,8 @@ import {
   createSession,
   getSession,
   type IntakeContextPayload,
+  listSessions,
+  type SessionListItem,
   patchAnalysis,
   patchIntakeContext,
   runConstructorStage2,
@@ -33,10 +35,13 @@ type SessionPayload = {
   analysisApproved: boolean | null;
   pipeline: Record<string, unknown> | null;
   pipelineMaxStep?: number;
+  createdAt?: string;
+  updatedAt?: string;
   intakeContext?: IntakeContextPayload;
   artifactVersions?: unknown;
 };
 
+/** Текущая сессия — localStorage, чтобы переживала обновление вкладки. Полное тело — на сервере (файлы JSON). */
 const STORAGE_KEY = 'mvp_session_id';
 
 /** Шаги цепочки после подтверждения анализа */
@@ -170,6 +175,8 @@ export default function WorkspacePage() {
     materials: '',
     confidenceNotes: '',
   });
+  const [sessionList, setSessionList] = useState<SessionListItem[]>([]);
+  const [creatingSession, setCreatingSession] = useState(false);
 
   const token = localStorage.getItem('mvp_token');
   useEffect(() => {
@@ -187,21 +194,30 @@ export default function WorkspacePage() {
     try {
       const data = (await getSession(id)) as SessionPayload;
       setSession(data);
+      try {
+        setSessionList(await listSessions());
+      } catch {
+        /* список сессий опционален */
+      }
     } catch (e) {
-      // Бэкенд хранит сессии в памяти: после перезапуска старый UUID даёт 404
       if (axios.isAxiosError(e) && e.response?.status === 404) {
-        sessionStorage.removeItem(STORAGE_KEY);
+        localStorage.removeItem(STORAGE_KEY);
         try {
           const { id: newId } = await createSession();
-          sessionStorage.setItem(STORAGE_KEY, newId);
+          localStorage.setItem(STORAGE_KEY, newId);
           setSessionId(newId);
           const data = (await getSession(newId)) as SessionPayload;
           setSession(data);
+          try {
+            setSessionList(await listSessions());
+          } catch {
+            /* ignore */
+          }
         } catch {
           setSessionId(null);
           setSession(null);
           setErr(
-            'Предыдущая сессия недоступна. Начата новая.',
+            'Сессия не найдена на сервере, новую создать не удалось.',
           );
         }
         return;
@@ -223,12 +239,12 @@ export default function WorkspacePage() {
     if (!token) return;
     let cancelled = false;
 
-    const existing = sessionStorage.getItem(STORAGE_KEY);
+    const existing = localStorage.getItem(STORAGE_KEY);
     if (existing) {
       setSessionId(existing);
       refresh(existing).catch(() => {
         if (!cancelled) {
-          sessionStorage.removeItem(STORAGE_KEY);
+          localStorage.removeItem(STORAGE_KEY);
           setSessionId(null);
         }
       });
@@ -241,7 +257,7 @@ export default function WorkspacePage() {
       try {
         const { id } = await createSession();
         if (cancelled) return;
-        sessionStorage.setItem(STORAGE_KEY, id);
+        localStorage.setItem(STORAGE_KEY, id);
         setSessionId(id);
         await refresh(id);
       } catch {
@@ -500,13 +516,52 @@ export default function WorkspacePage() {
 
   function logout() {
     localStorage.removeItem('mvp_token');
-    sessionStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(STORAGE_KEY);
     setAuthToken(null);
     nav('/', { replace: true });
   }
 
   function goHome() {
     nav('/', { replace: false });
+  }
+
+  async function switchWorkspaceSession(id: string) {
+    if (!token || id === sessionId) return;
+    setErr(null);
+    localStorage.setItem(STORAGE_KEY, id);
+    setSessionId(id);
+    setFiles([]);
+    await refresh(id);
+  }
+
+  async function startNewWorkspaceSession() {
+    if (!token) return;
+    setCreatingSession(true);
+    setErr(null);
+    try {
+      const { id } = await createSession();
+      localStorage.setItem(STORAGE_KEY, id);
+      setSessionId(id);
+      setFiles([]);
+      await refresh(id);
+    } catch {
+      setErr('Не удалось создать новую сессию.');
+    } finally {
+      setCreatingSession(false);
+    }
+  }
+
+  function exportCurrentSessionJson() {
+    if (!session) return;
+    const blob = new Blob([JSON.stringify(session, null, 2)], {
+      type: 'application/json',
+    });
+    const a = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    a.href = url;
+    a.download = `minilik-session-${session.id}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   const maxPipeline = session?.pipelineMaxStep ?? 0;
@@ -570,6 +625,74 @@ export default function WorkspacePage() {
             </button>
           </div>
         </header>
+
+        <section className="session-history-bar card panel" aria-label="История сессий">
+          <div className="session-history-top">
+            <details className="session-history-details">
+              <summary className="session-history-summary">
+                История сессий
+                <span className="session-history-count">({sessionList.length})</span>
+              </summary>
+              {sessionList.length === 0 ? (
+                <p className="session-history-empty">Пока нет сохранённых сессий на сервере.</p>
+              ) : (
+                <ul className="session-history-list">
+                  {sessionList.map((row) => (
+                    <li key={row.id}>
+                      <button
+                        type="button"
+                        className={
+                          row.id === sessionId
+                            ? 'session-history-pill session-history-pill--current'
+                            : 'session-history-pill'
+                        }
+                        onClick={() => void switchWorkspaceSession(row.id)}
+                        disabled={busy !== null || creatingSession}
+                      >
+                        <span className="session-history-pill-label">{row.label}</span>
+                        <span className="session-history-pill-meta">
+                          {new Date(row.updatedAt).toLocaleString('ru-RU', {
+                            day: '2-digit',
+                            month: 'short',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                          {row.imageCount ? ` · ${row.imageCount} фото` : ''}
+                          {row.pipelineMaxStep > 0
+                            ? ` · шаг ${row.pipelineMaxStep}/8`
+                            : ''}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </details>
+            <div className="session-history-actions">
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => void startNewWorkspaceSession()}
+                disabled={busy !== null || creatingSession}
+              >
+                {creatingSession ? 'Создание…' : 'Новая сессия'}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={exportCurrentSessionJson}
+                disabled={!session}
+              >
+                Скачать JSON
+              </button>
+            </div>
+          </div>
+          <p className="session-history-hint">
+            Все ответы и загруженные фото сохраняются на сервере в JSON; ссылки на сгенерированные
+            картинки тоже лежат в сессии (если внешний URL перестанет открываться, используйте выгрузку
+            заранее или загрузку своих файлов).
+          </p>
+        </section>
 
         <section className="hero">
           <h2>Как это работает (простыми словами)</h2>

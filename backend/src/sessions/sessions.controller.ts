@@ -86,6 +86,12 @@ export class SessionsController {
     return this.sessions.create();
   }
 
+  /** Список сохранённых сессий (метаданные; полное состояние — GET :id). */
+  @Get()
+  list() {
+    return { sessions: this.sessions.listSummaries() };
+  }
+
   @Get(':id')
   get(@Param('id', ParseUUIDPipe) id: string) {
     return this.sessions.get(id);

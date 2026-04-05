@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import type { Express } from 'express';
@@ -21,6 +22,7 @@ import type {
   PipelineResult,
   SessionState,
 } from './sessions.types';
+import { SessionsPersistenceService } from './sessions-persistence.service';
 
 const CHANNELS: SalesChannel[] = ['wb', 'ozon', 'site'];
 const SCENARIOS: Scenario[] = ['pessimistic', 'base', 'optimistic'];
@@ -245,16 +247,70 @@ function resolvePipelineKey(
   );
 }
 
+function sessionListLabel(s: SessionState): string {
+  const pt =
+    s.analysis && typeof (s.analysis as { productType?: unknown }).productType === 'string'
+      ? String((s.analysis as { productType: string }).productType).trim()
+      : '';
+  if (pt) return pt;
+  const brand = s.intakeContext?.brand?.trim();
+  if (brand) return brand;
+  return `Сессия ${s.id.slice(0, 8)}…`;
+}
+
 @Injectable()
-export class SessionsService {
+export class SessionsService implements OnModuleInit {
   private readonly log = new Logger(SessionsService.name);
   private readonly sessions = new Map<string, SessionState>();
 
-  constructor(private readonly agents: AgentsService) {}
+  constructor(
+    private readonly agents: AgentsService,
+    private readonly persistence: SessionsPersistenceService,
+  ) {}
+
+  async onModuleInit(): Promise<void> {
+    const loaded = await this.persistence.loadAll();
+    for (const s of loaded) {
+      if (!s.updatedAt) s.updatedAt = s.createdAt;
+      this.sessions.set(s.id, s);
+    }
+    this.log.log(`из файлов загружено сессий: ${loaded.length}`);
+  }
+
+  /** Запись полной сессии в JSON (включая фото data URL и ссылки на сгенерированные изображения). */
+  private scheduleSave(s: SessionState): void {
+    s.updatedAt = new Date().toISOString();
+    void this.persistence.save(s).catch((e) =>
+      this.log.error(`[${s.id}] ошибка сохранения сессии: ${String(e)}`),
+    );
+  }
+
+  listSummaries(): {
+    id: string;
+    createdAt: string;
+    updatedAt: string;
+    pipelineMaxStep: number;
+    analysisApproved: boolean | null;
+    label: string;
+    imageCount: number;
+  }[] {
+    return Array.from(this.sessions.values())
+      .map((s) => ({
+        id: s.id,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt ?? s.createdAt,
+        pipelineMaxStep: s.pipelineMaxStep,
+        analysisApproved: s.analysisApproved,
+        label: sessionListLabel(s),
+        imageCount: s.images?.length ?? 0,
+      }))
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+  }
 
   create(): SessionState {
     const id = randomUUID();
     this.log.log(`[${id}] создана новая сессия`);
+    const now = new Date().toISOString();
     const s: SessionState = {
       id,
       images: [],
@@ -263,11 +319,13 @@ export class SessionsService {
       analysisApproved: null,
       pipeline: null,
       pipelineMaxStep: 0,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
+      updatedAt: now,
       intakeContext: {},
       artifactVersions: null,
     };
     this.sessions.set(id, s);
+    this.scheduleSave(s);
     return s;
   }
 
@@ -281,6 +339,7 @@ export class SessionsService {
     const s = this.get(id);
     s.intakeContext = { ...s.intakeContext, ...ctx };
     this.log.log(`[${id}] обновлён intakeContext`);
+    this.scheduleSave(s);
     return s;
   }
 
@@ -305,6 +364,7 @@ export class SessionsService {
     s.analysisApproved = null;
     s.pipeline = null;
     s.pipelineMaxStep = 0;
+    this.scheduleSave(s);
     return s;
   }
 
@@ -332,6 +392,7 @@ export class SessionsService {
     s.analysisApproved = null;
     s.pipeline = null;
     s.pipelineMaxStep = 0;
+    this.scheduleSave(s);
     return s;
   }
 
@@ -381,6 +442,7 @@ export class SessionsService {
       s.analysisReport = patch.analysisReport;
     }
     this.log.log(`[${id}] карточка анализа обновлена вручную (patch)`);
+    this.scheduleSave(s);
     return s;
   }
 
@@ -395,6 +457,7 @@ export class SessionsService {
       s.pipeline = null;
       s.pipelineMaxStep = 0;
     }
+    this.scheduleSave(s);
     return s;
   }
 
@@ -417,6 +480,7 @@ export class SessionsService {
     }
 
     await this.runPipelineStepInternal(s, step);
+    this.scheduleSave(s);
     return s;
   }
 
@@ -460,6 +524,7 @@ export class SessionsService {
     this.log.log(
       `[${id}] pipeline (full): ВСЁ ГОТОВО за ${Math.round(performance.now() - pipelineStart)}ms`,
     );
+    this.scheduleSave(s);
     return s;
   }
 
@@ -718,6 +783,7 @@ export class SessionsService {
         (s.pipeline as Record<string, unknown>)[key] = out;
       }
     }
+    this.scheduleSave(s);
     return s;
   }
 
@@ -747,6 +813,7 @@ export class SessionsService {
         (s.pipeline as Record<string, unknown>)[key] = merged;
       }
     }
+    this.scheduleSave(s);
     return s;
   }
 
@@ -780,6 +847,7 @@ export class SessionsService {
     this.log.log(
       `[${id}] pattern layout image: ${url ? 'ok' : 'пусто'} за ${Math.round(performance.now() - t0)}ms`,
     );
+    this.scheduleSave(s);
     return s;
   }
 
@@ -799,6 +867,7 @@ export class SessionsService {
     this.log.log(
       `[${id}] technical flat image: ${url ? 'ok' : 'пусто'} за ${Math.round(performance.now() - t0)}ms`,
     );
+    this.scheduleSave(s);
     return s;
   }
 
@@ -841,6 +910,7 @@ export class SessionsService {
     this.log.log(
       `[${id}] kid studio image: ${url ? 'ok' : 'пусто'} за ${Math.round(performance.now() - t0)}ms`,
     );
+    this.scheduleSave(s);
     return s;
   }
 
@@ -891,6 +961,7 @@ export class SessionsService {
     );
     if (!s.pipeline) s.pipeline = {};
     s.pipeline.patternRender = result;
+    this.scheduleSave(s);
     return result;
   }
 
@@ -928,6 +999,7 @@ export class SessionsService {
     this.log.log(
       `[${id}] конструктор этап 2 готов за ${Math.round(performance.now() - t0)}ms`,
     );
+    this.scheduleSave(s);
     return s;
   }
 }

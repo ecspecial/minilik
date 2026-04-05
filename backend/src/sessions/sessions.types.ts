@@ -59,6 +59,8 @@ export type SessionState = {
   /** Последний успешно выполненный шаг (1…8) */
   pipelineMaxStep: number;
   createdAt: string;
+  /** Время последнего сохранения на диск */
+  updatedAt: string;
   /** Опциональный контекст для intake (§1.2) */
   intakeContext?: IntakeContext;
   /** Версии промптов/схем/модели (п.16 ТЗ) */
