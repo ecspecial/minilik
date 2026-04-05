@@ -34,6 +34,23 @@ import api, {
 
 type Analysis = Record<string, unknown>;
 
+/** Полный URL для копирования (тот же хост, что у открытой страницы). */
+function absoluteSessionImageUrl(sessionId: string, imageIndex: number): string {
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  return `${origin}/api/sessions/${sessionId}/images/${imageIndex}`;
+}
+
+/** Для выгрузки JSON: из относительного `/sessions/…` в `https://…/api/sessions/…`. */
+function exportedImageUrlField(im: { url?: string }): string | undefined {
+  if (!im.url) return undefined;
+  if (/^https?:\/\//i.test(im.url)) return im.url;
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const path = im.url.startsWith('/api')
+    ? im.url
+    : `/api${im.url.startsWith('/') ? im.url : `/${im.url}`}`;
+  return `${origin}${path}`;
+}
+
 type SessionPayload = {
   id: string;
   images: { mimeType: string; url?: string; dataUrl?: string }[];
@@ -614,7 +631,7 @@ export default function WorkspacePage() {
       ...session,
       images: session.images.map((im) =>
         im.url
-          ? { mimeType: im.mimeType, url: im.url }
+          ? { mimeType: im.mimeType, url: exportedImageUrlField(im) ?? im.url }
           : { mimeType: im.mimeType, dataUrl: im.dataUrl },
       ),
     };
@@ -703,7 +720,7 @@ export default function WorkspacePage() {
               ) : (
                 <ul className="session-history-list">
                   {sessionList.map((row) => (
-                    <li key={row.id}>
+                    <li key={row.id} className="session-history-row">
                       <button
                         type="button"
                         className={
@@ -728,6 +745,23 @@ export default function WorkspacePage() {
                             : ''}
                         </span>
                       </button>
+                      {row.imageCount > 0 ? (
+                        <div className="session-history-image-urls">
+                          <span className="session-history-urls-label">
+                            URL фото (скопировать целиком; открытие в новой вкладке —
+                            только будучи залогиненным на этом сайте):
+                          </span>
+                          {Array.from({ length: row.imageCount }, (_, i) => (
+                            <code
+                              key={`${row.id}-img-${i}`}
+                              className="session-history-url-code"
+                              title="Выделить и скопировать"
+                            >
+                              {absoluteSessionImageUrl(row.id, i)}
+                            </code>
+                          ))}
+                        </div>
+                      ) : null}
                     </li>
                   ))}
                 </ul>
@@ -1028,6 +1062,12 @@ export default function WorkspacePage() {
                     <span className="file-preview-name" title="">
                       #{index + 1}
                     </span>
+                    <code
+                      className="session-inline-image-url"
+                      title="Полный URL для копирования"
+                    >
+                      {absoluteSessionImageUrl(session.id, index)}
+                    </code>
                   </li>
                 ))}
               </ul>
