@@ -1,5 +1,47 @@
 import { Fragment, useMemo, useState, type ReactNode } from 'react';
 
+/** Плейсхолдеры под пунктами плана закупки (RFQ / сравнение поставщиков). */
+function ProcurementFutureActions({
+  headingText,
+}: {
+  headingText: string;
+}): ReactNode {
+  const t = headingText.trim();
+  const m = t.match(/^(\d+)\.\s+(.+)$/s);
+  if (!m) return null;
+  const n = Number(m[1]);
+  const body = m[2];
+  if (n === 2 && /RFQ|поставщик/i.test(body)) {
+    return (
+      <div className="chat-future-actions">
+        <button
+          type="button"
+          className="secondary chat-future-action"
+          disabled
+          title="Функция появится позже"
+        >
+          Собрать RFQ для поставщиков
+        </button>
+      </div>
+    );
+  }
+  if (n === 3 && /MOQ|сравнительн|таблиц/i.test(body)) {
+    return (
+      <div className="chat-future-actions">
+        <button
+          type="button"
+          className="secondary chat-future-action"
+          disabled
+          title="Функция появится позже"
+        >
+          Сравнительная таблица поставщиков
+        </button>
+      </div>
+    );
+  }
+  return null;
+}
+
 /** Нумерованные строки («1. …») — заголовки секций; пустая строка разделяет абзацы-блоки. */
 function segmentAssistantText(text: string): (
   | { kind: 'heading'; text: string }
@@ -205,12 +247,12 @@ function AssistantTextBubble({
               {segments.map((seg, i) => {
                 if (seg.kind === 'heading') {
                   return (
-                    <p
-                      key={`h-${i}`}
-                      className="chat-paragraph chat-paragraph--section-heading"
-                    >
-                      {seg.text}
-                    </p>
+                    <Fragment key={`h-${i}`}>
+                      <p className="chat-paragraph chat-paragraph--section-heading">
+                        {seg.text}
+                      </p>
+                      <ProcurementFutureActions headingText={seg.text} />
+                    </Fragment>
                   );
                 }
                 return (

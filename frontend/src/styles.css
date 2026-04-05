@@ -1335,6 +1335,17 @@ html[data-theme='dark'] .chat-msg-bubble {
   margin-top: 0;
 }
 
+.chat-future-actions {
+  margin: 0 0 0.15rem;
+  padding-left: 0.85rem;
+}
+
+.chat-future-action {
+  font-size: 0.82rem;
+  padding: 0.42rem 0.9rem;
+  font-weight: 600;
+}
+
 .chat-body-block {
   margin: 0;
   padding: 0.7rem 0.9rem;
