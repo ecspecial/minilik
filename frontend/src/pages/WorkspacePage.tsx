@@ -34,12 +34,6 @@ import api, {
 
 type Analysis = Record<string, unknown>;
 
-/** Полный URL для копирования (тот же хост, что у открытой страницы). */
-function absoluteSessionImageUrl(sessionId: string, imageIndex: number): string {
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
-  return `${origin}/api/sessions/${sessionId}/images/${imageIndex}`;
-}
-
 /** Для выгрузки JSON: из относительного `/sessions/…` в `https://…/api/sessions/…`. */
 function exportedImageUrlField(im: { url?: string }): string | undefined {
   if (!im.url) return undefined;
@@ -720,7 +714,7 @@ export default function WorkspacePage() {
               ) : (
                 <ul className="session-history-list">
                   {sessionList.map((row) => (
-                    <li key={row.id} className="session-history-row">
+                    <li key={row.id}>
                       <button
                         type="button"
                         className={
@@ -745,23 +739,6 @@ export default function WorkspacePage() {
                             : ''}
                         </span>
                       </button>
-                      {row.imageCount > 0 ? (
-                        <div className="session-history-image-urls">
-                          <span className="session-history-urls-label">
-                            URL фото (скопировать целиком; открытие в новой вкладке —
-                            только будучи залогиненным на этом сайте):
-                          </span>
-                          {Array.from({ length: row.imageCount }, (_, i) => (
-                            <code
-                              key={`${row.id}-img-${i}`}
-                              className="session-history-url-code"
-                              title="Выделить и скопировать"
-                            >
-                              {absoluteSessionImageUrl(row.id, i)}
-                            </code>
-                          ))}
-                        </div>
-                      ) : null}
                     </li>
                   ))}
                 </ul>
@@ -1033,45 +1010,31 @@ export default function WorkspacePage() {
             </button>
           </div>
           {session && session.images.length > 0 && (
-            <div style={{ marginTop: 16 }}>
-              <p className="muted" style={{ marginBottom: 8 }}>
-                Загружено в сессию: <strong>{session.images.length}</strong>{' '}
-                — картинки хранятся как файлы на сервере, в JSON только ссылки.
-              </p>
-              <ul
-                className="file-preview-strip"
-                aria-label="Фото в текущей сессии"
-              >
-                {session.images.map((_, index) => (
-                  <li
-                    key={`sess-img-${session.id}-${index}`}
-                    className="file-preview-card"
-                  >
-                    {sessionImagePreviewUrls[index] ? (
-                      <img
-                        src={sessionImagePreviewUrls[index]}
-                        alt={`Фото ${index + 1}`}
-                        className="file-preview-img"
-                      />
-                    ) : (
-                      <div
-                        className="file-preview-placeholder"
-                        aria-hidden
-                      />
-                    )}
-                    <span className="file-preview-name" title="">
-                      #{index + 1}
-                    </span>
-                    <code
-                      className="session-inline-image-url"
-                      title="Полный URL для копирования"
-                    >
-                      {absoluteSessionImageUrl(session.id, index)}
-                    </code>
-                  </li>
-                ))}
-              </ul>
-            </div>
+            <ul
+              className="file-preview-strip"
+              style={{ marginTop: 16 }}
+              aria-label={`Загруженные фото сессии, ${session.images.length}`}
+            >
+              {session.images.map((_, index) => (
+                <li
+                  key={`sess-img-${session.id}-${index}`}
+                  className="file-preview-card file-preview-card--readonly"
+                >
+                  {sessionImagePreviewUrls[index] ? (
+                    <img
+                      src={sessionImagePreviewUrls[index]}
+                      alt=""
+                      className="file-preview-img"
+                    />
+                  ) : (
+                    <div
+                      className="file-preview-placeholder"
+                      aria-hidden
+                    />
+                  )}
+                </li>
+              ))}
+            </ul>
           )}
           {files.length > 0 && !sessionId && (
             <p className="muted" style={{ marginTop: 8 }}>
