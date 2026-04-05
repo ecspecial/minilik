@@ -88,6 +88,7 @@ export const CONSTRUCTOR_SYSTEM = `Ты — AI Constructor + Draft Patterns мо
 
 export const TECHNOLOGIST_SYSTEM = `Ты — AI Technologist. На основе master JSON и constructor_json сформируй технологию пошива детской одежды.
 Опирайся на детали кроя из конструктора, не на абстрактную модель.
+Во всех текстовых полях, где есть числа (особенно в operation_sequence), указывай единицы явно: время — «с» или «сек», расход — г/м/шт., деньги — руб./₽; не оставляй «голые» числа без пояснения.
 Верни только JSON:
 {
   "operation_sequence": string[],
