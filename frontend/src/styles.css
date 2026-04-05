@@ -1031,6 +1031,8 @@ button.file-preview-remove:disabled {
   --landing-accent-5: #7c3aed;
   --landing-accent-6: #db2777;
   --landing-accent-7: #0891b2;
+  --landing-accent-8: #6366f1;
+  --landing-accent-9: #e11d48;
   min-height: 100vh;
   box-sizing: border-box;
   padding: 2.5rem 1.25rem 3rem;
@@ -1199,6 +1201,21 @@ html[data-theme='dark'] .landing-tile:hover {
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
 }
 
+.landing-tile--soon:disabled {
+  opacity: 0.9;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.landing-tile--soon:disabled:hover {
+  transform: none;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+html[data-theme='dark'] .landing-tile--soon:disabled:hover {
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
+}
+
 .landing-tile:focus-visible {
   outline: 2px solid var(--tile-accent);
   outline-offset: 2px;
@@ -1225,17 +1242,9 @@ html[data-theme='dark'] .landing-tile-desc {
   color: var(--text-muted);
 }
 
-.landing-tile:nth-child(7) {
-  grid-column: 2;
-}
-
 @media (max-width: 720px) {
   .landing-grid {
     grid-template-columns: 1fr;
-  }
-
-  .landing-tile:nth-child(7) {
-    grid-column: 1;
   }
 }
 

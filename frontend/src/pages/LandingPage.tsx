@@ -8,53 +8,89 @@ import {
   type WorkspaceSectionKey,
 } from '../workspaceSections';
 
-const TILES: {
-  id: WorkspaceSectionKey;
-  title: string;
-  desc: string;
-  accent: string;
-}[] = [
+type LandingTile =
+  | {
+      key: string;
+      section: WorkspaceSectionKey;
+      title: string;
+      desc: string;
+      accent: string;
+      soon?: false;
+    }
+  | {
+      key: string;
+      title: string;
+      desc: string;
+      accent: string;
+      soon: true;
+      soonTitle?: string;
+    };
+
+const TILES: LandingTile[] = [
   {
-    id: 'analysis',
+    key: 'analysis',
+    section: 'analysis',
     title: 'ИИ-анализ изделия',
     desc: 'Тип из справочника, сезон, силуэт, детали и материалы по фото',
     accent: 'var(--landing-accent-1)',
   },
   {
-    id: 'constructor',
+    key: 'constructor',
+    section: 'constructor',
     title: 'ИИ-конструктор',
     desc: 'Описание конструкции, крой, мерки, ТЗ на черновик лекал',
     accent: 'var(--landing-accent-2)',
   },
   {
-    id: 'technologist',
+    key: 'technologist',
+    section: 'technologist',
     title: 'ИИ-технолог',
     desc: 'Этапы пошива, оборудование, сложные узлы, риски',
     accent: 'var(--landing-accent-3)',
   },
   {
-    id: 'purchasing',
+    key: 'purchasing',
+    section: 'purchasing',
     title: 'ИИ-закупщик',
     desc: 'Ткань, фурнитура, расход и отходность',
     accent: 'var(--landing-accent-4)',
   },
   {
-    id: 'finance',
+    key: 'finance',
+    section: 'finance',
     title: 'ИИ-финансист',
     desc: 'Черновик юнит-экономики: WB, Ozon, свой сайт',
     accent: 'var(--landing-accent-5)',
   },
   {
-    id: 'marketer',
+    key: 'marketer',
+    section: 'marketer',
     title: 'ИИ-маркетолог',
     desc: 'SEO, описание, буллеты, позиционирование и УТП',
     accent: 'var(--landing-accent-6)',
   },
   {
-    id: 'photo',
+    key: 'photo',
+    section: 'photo',
     title: 'ИИ-фото и визуал',
     desc: 'ТЗ на съёмку, ракурсы, инфографика, генерация изображения',
     accent: 'var(--landing-accent-7)',
+  },
+  {
+    key: 'trends-analyst',
+    soon: true,
+    soonTitle: 'Раздел в разработке',
+    title: 'ИИ — аналитик трендов',
+    desc: 'Только ручной режим. В разработке*',
+    accent: 'var(--landing-accent-8)',
+  },
+  {
+    key: 'video-model',
+    soon: true,
+    soonTitle: 'Скоро в кабинете',
+    title: 'ИИ — Видео модель',
+    desc: 'Создаёт короткие видео до 30 секунд',
+    accent: 'var(--landing-accent-9)',
   },
 ];
 
@@ -125,18 +161,32 @@ export default function LandingPage() {
       </div>
 
       <div className="landing-grid">
-        {TILES.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            className="landing-tile"
-            style={{ ['--tile-accent' as string]: t.accent }}
-            onClick={() => goToModule(t.id)}
-          >
-            <span className="landing-tile-title">{t.title}</span>
-            <span className="landing-tile-desc">{t.desc}</span>
-          </button>
-        ))}
+        {TILES.map((t) =>
+          'soon' in t && t.soon ? (
+            <button
+              key={t.key}
+              type="button"
+              className="landing-tile landing-tile--soon"
+              style={{ ['--tile-accent' as string]: t.accent }}
+              disabled
+              title={t.soonTitle}
+            >
+              <span className="landing-tile-title">{t.title}</span>
+              <span className="landing-tile-desc">{t.desc}</span>
+            </button>
+          ) : (
+            <button
+              key={t.key}
+              type="button"
+              className="landing-tile"
+              style={{ ['--tile-accent' as string]: t.accent }}
+              onClick={() => goToModule(t.section)}
+            >
+              <span className="landing-tile-title">{t.title}</span>
+              <span className="landing-tile-desc">{t.desc}</span>
+            </button>
+          ),
+        )}
       </div>
     </div>
   );
