@@ -3,6 +3,7 @@ import {
   Body,
   Controller,
   Get,
+  NotFoundException,
   Param,
   ParseIntPipe,
   ParseUUIDPipe,
@@ -22,6 +23,7 @@ import {
   IsString,
 } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { Public } from '../auth/public.decorator';
 import { AnalysisPatchDto } from './dto/analysis-patch.dto';
 import type { IntakeContext } from './sessions.types';
 import { SessionsService } from './sessions.service';
@@ -108,6 +110,30 @@ export class SessionsController {
       id,
       index,
     );
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Cache-Control', 'private, max-age=86400');
+    res.send(buffer);
+  }
+
+  /** Картинки pipeline в JSON как ссылки; отдача без JWT — для `<img src="…">`. */
+  @Public()
+  @Get(':id/pipeline/:kind')
+  async getPipelineImage(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('kind') kind: string,
+    @Res() res: Response,
+  ) {
+    const allowed = new Set([
+      'generated',
+      'pattern-layout',
+      'technical-flat',
+      'kid-studio',
+    ]);
+    if (!allowed.has(kind)) {
+      throw new NotFoundException('Неизвестный тип изображения');
+    }
+    const { buffer, mimeType } =
+      await this.sessions.getPipelineImageBytes(id, kind);
     res.setHeader('Content-Type', mimeType);
     res.setHeader('Cache-Control', 'private, max-age=86400');
     res.send(buffer);

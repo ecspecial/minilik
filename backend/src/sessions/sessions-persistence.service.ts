@@ -87,6 +87,63 @@ export class SessionsPersistenceService implements OnModuleInit {
     }
   }
 
+  /** Каталог артефактов pipeline: раскладка лекал, техрисунок, lookbook и т.д. */
+  pipelineDir(sessionId: string): string {
+    return path.join(this.sessionImagesDir(sessionId), 'pipeline');
+  }
+
+  async writePipelineImage(
+    sessionId: string,
+    kind: string,
+    buffer: Buffer,
+    mime: string,
+  ): Promise<void> {
+    const dir = this.pipelineDir(sessionId);
+    mkdirSync(dir, { recursive: true });
+    const base = path.join(dir, kind);
+    const tmp = `${base}.tmp`;
+    await fs.writeFile(tmp, buffer);
+    await fs.rename(tmp, base);
+    const mimePath = `${base}.mime`;
+    const mtmp = `${mimePath}.tmp`;
+    await fs.writeFile(mtmp, (mime || 'image/png').split(';')[0].trim(), 'utf8');
+    await fs.rename(mtmp, mimePath);
+  }
+
+  async readPipelineImage(
+    sessionId: string,
+    kind: string,
+  ): Promise<{ buffer: Buffer; mimeType: string } | null> {
+    const base = path.join(this.pipelineDir(sessionId), kind);
+    try {
+      const buffer = await fs.readFile(base);
+      let mimeType = 'image/png';
+      try {
+        const m = await fs.readFile(`${base}.mime`, 'utf8');
+        const t = m.trim();
+        if (t) mimeType = t;
+      } catch {
+        /* только бинарник — дефолт png */
+      }
+      return { buffer, mimeType };
+    } catch {
+      return null;
+    }
+  }
+
+  async clearPipelineImages(sessionId: string): Promise<void> {
+    const dir = this.pipelineDir(sessionId);
+    try {
+      const names = await fs.readdir(dir);
+      await Promise.all(
+        names.map((n) => fs.unlink(path.join(dir, n)).catch(() => undefined)),
+      );
+      await fs.rmdir(dir);
+    } catch {
+      /* каталога нет */
+    }
+  }
+
   async save(state: SessionState): Promise<void> {
     const p = this.filePath(state.id);
     const tmp = `${p}.tmp`;

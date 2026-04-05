@@ -232,7 +232,10 @@ function buildFinalPackageText(
     img
       ? typeof img === 'string' && img.startsWith('data:')
         ? `Изображение изделия: data-url (~${Math.round(img.length / 1024)} KiB)`
-        : `Изображение изделия: ${String(img).slice(0, 200)}`
+        : typeof img === 'string' &&
+            (img.startsWith('/sessions/') || img.startsWith('/api/sessions/'))
+          ? `Изображение изделия: ${img}`
+          : `Изображение изделия: ${String(img).slice(0, 200)}`
       : 'Изображение изделия: нет',
   );
   blocks.push(
@@ -256,6 +259,19 @@ function buildFinalPackageText(
     'Сводка собрана на бэкенде из текстов модулей. Противоречия между блоками не проверялись автоматически.',
   );
   return blocks.join('\n');
+}
+
+const PIPELINE_IMAGE_KINDS = [
+  'generated',
+  'pattern-layout',
+  'technical-flat',
+  'kid-studio',
+] as const;
+
+type PipelineImageKind = (typeof PIPELINE_IMAGE_KINDS)[number];
+
+function isPipelineImageKind(s: string): s is PipelineImageKind {
+  return (PIPELINE_IMAGE_KINDS as readonly string[]).includes(s);
 }
 
 function resolvePipelineKey(
@@ -391,6 +407,86 @@ export class SessionsService implements OnModuleInit {
     throw new NotFoundException('Изображение не найдено');
   }
 
+  /** Публичный путь (как у intake-фото): nginx проксирует на /api/sessions/… */
+  private pipelineImagePublicPath(
+    sessionId: string,
+    kind: PipelineImageKind,
+  ): string {
+    return `/sessions/${sessionId}/pipeline/${kind}`;
+  }
+
+  /**
+   * Сохраняет ответ ИИ (data URL или временный https) в files/images/…/pipeline/ и
+   * возвращает стабильную ссылку для JSON (без огромного base64).
+   */
+  private async persistPipelineImageUrl(
+    sessionId: string,
+    kind: PipelineImageKind,
+    raw: string | null,
+  ): Promise<string | null> {
+    if (raw == null) return null;
+    const s = String(raw).trim();
+    if (!s) return null;
+
+    const expected = this.pipelineImagePublicPath(sessionId, kind);
+    if (s === expected) return expected;
+    if (s === `/api${expected}` || s.endsWith(`/sessions/${sessionId}/pipeline/${kind}`)) {
+      return expected;
+    }
+
+    let buffer: Buffer;
+    let mime = 'image/png';
+
+    if (s.startsWith('data:')) {
+      const m = /^data:([^;]+);base64,(.+)$/i.exec(s.replace(/\s/g, ''));
+      if (!m) {
+        this.log.warn(`[${sessionId}] pipeline ${kind}: не удалось разобрать data URL`);
+        return null;
+      }
+      mime = (m[1] || mime).split(';')[0].trim();
+      buffer = Buffer.from(m[2], 'base64');
+    } else if (s.startsWith('http://') || s.startsWith('https://')) {
+      try {
+        const res = await fetch(s);
+        if (!res.ok) {
+          this.log.warn(
+            `[${sessionId}] pipeline ${kind}: загрузка по URL → HTTP ${res.status}`,
+          );
+          return null;
+        }
+        const ct = res.headers.get('content-type');
+        if (ct?.startsWith('image/')) mime = ct.split(';')[0].trim();
+        buffer = Buffer.from(await res.arrayBuffer());
+      } catch (e) {
+        this.log.warn(
+          `[${sessionId}] pipeline ${kind}: ошибка загрузки URL: ${String(e)}`,
+        );
+        return null;
+      }
+    } else {
+      this.log.warn(
+        `[${sessionId}] pipeline ${kind}: неизвестный формат ссылки, пропуск сохранения`,
+      );
+      return null;
+    }
+
+    if (!buffer.length) return null;
+    await this.persistence.writePipelineImage(sessionId, kind, buffer, mime);
+    return expected;
+  }
+
+  async getPipelineImageBytes(
+    id: string,
+    kind: string,
+  ): Promise<{ buffer: Buffer; mimeType: string }> {
+    if (!isPipelineImageKind(kind)) {
+      throw new NotFoundException('Неизвестный тип изображения');
+    }
+    const r = await this.persistence.readPipelineImage(id, kind);
+    if (!r) throw new NotFoundException('Файл изображения отсутствует');
+    return r;
+  }
+
   setIntakeContext(id: string, ctx: IntakeContext): SessionState {
     const s = this.get(id);
     s.intakeContext = { ...s.intakeContext, ...ctx };
@@ -412,6 +508,7 @@ export class SessionsService implements OnModuleInit {
       `[${id}] загрузка изображений: count=${files.length}, bytes=${sizes.join(', ')}`,
     );
     await this.persistence.clearSessionImages(id);
+    await this.persistence.clearPipelineImages(id);
     s.images = [];
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
@@ -455,6 +552,7 @@ export class SessionsService implements OnModuleInit {
     s.analysisApproved = null;
     s.pipeline = null;
     s.pipelineMaxStep = 0;
+    await this.persistence.clearPipelineImages(id);
     this.scheduleSave(s);
     return s;
   }
@@ -517,6 +615,7 @@ export class SessionsService implements OnModuleInit {
     s.analysisApproved = approved;
     this.log.log(`[${id}] решение по анализу: approved=${approved}`);
     if (!approved) {
+      void this.persistence.clearPipelineImages(id);
       s.pipeline = null;
       s.pipelineMaxStep = 0;
     }
@@ -600,6 +699,7 @@ export class SessionsService implements OnModuleInit {
 
     if (step === 1) {
       this.log.log(`[${id}] pipeline step 1/8: конструктор + draft patterns (сброс отчёта)`);
+      await this.persistence.clearPipelineImages(id);
       s.pipeline = {};
       s.pipelineMaxStep = 0;
       s.artifactVersions = this.agents.snapshotArtifactVersions();
@@ -777,11 +877,15 @@ export class SessionsService implements OnModuleInit {
       this.log.log(
         `[${id}] image prompt length=${prompt.length}, type=${String(analysis.productType)}`,
       );
-      const generatedImageUrl = await this.agents.generateGalleryImage(prompt);
-      s.pipeline.generatedImageUrl = generatedImageUrl;
+      const generatedRaw = await this.agents.generateGalleryImage(prompt);
+      s.pipeline.generatedImageUrl = await this.persistPipelineImageUrl(
+        id,
+        'generated',
+        generatedRaw,
+      );
       s.pipelineMaxStep = 7;
       this.log.log(
-        `[${id}] pipeline step 7 готов за ${Math.round(performance.now() - t0)}ms, hasImage=${Boolean(generatedImageUrl)}`,
+        `[${id}] pipeline step 7 готов за ${Math.round(performance.now() - t0)}ms, hasImage=${Boolean(s.pipeline.generatedImageUrl)}`,
       );
       return;
     }
@@ -902,10 +1006,11 @@ export class SessionsService implements OnModuleInit {
     if (!s.pipeline) s.pipeline = {};
     s.pipeline.lekalaLayoutSheetText = sheet;
     s.pipeline.patternTechPackSheetText = sheet;
-    const url = await this.agents.generatePatternLayoutImage(stage2.trim(), {
+    const raw = await this.agents.generatePatternLayoutImage(stage2.trim(), {
       usePreciseStage2: true,
       techPackSheetText: sheet,
     });
+    const url = await this.persistPipelineImageUrl(id, 'pattern-layout', raw);
     s.pipeline.patternLayoutImageUrl = url;
     this.log.log(
       `[${id}] pattern layout image: ${url ? 'ok' : 'пусто'} за ${Math.round(performance.now() - t0)}ms`,
@@ -924,11 +1029,15 @@ export class SessionsService implements OnModuleInit {
       );
     }
     const t0 = performance.now();
-    const url = await this.agents.generateTechnicalFlatSketchImage(ctx);
+    const raw = await this.agents.generateTechnicalFlatSketchImage(ctx);
     if (!s.pipeline) s.pipeline = {};
-    s.pipeline.technicalFlatImageUrl = url;
+    s.pipeline.technicalFlatImageUrl = await this.persistPipelineImageUrl(
+      id,
+      'technical-flat',
+      raw,
+    );
     this.log.log(
-      `[${id}] technical flat image: ${url ? 'ok' : 'пусто'} за ${Math.round(performance.now() - t0)}ms`,
+      `[${id}] technical flat image: ${s.pipeline.technicalFlatImageUrl ? 'ok' : 'пусто'} за ${Math.round(performance.now() - t0)}ms`,
     );
     this.scheduleSave(s);
     return s;
@@ -965,13 +1074,17 @@ export class SessionsService implements OnModuleInit {
       throw new BadRequestException('Недостаточно данных для описания образа');
     }
     const t0 = performance.now();
-    const url = await this.agents.generateStudioLookbookImage(
+    const raw = await this.agents.generateStudioLookbookImage(
       garmentDescription,
     );
     if (!s.pipeline) s.pipeline = {};
-    s.pipeline.kidStudioImageUrl = url;
+    s.pipeline.kidStudioImageUrl = await this.persistPipelineImageUrl(
+      id,
+      'kid-studio',
+      raw,
+    );
     this.log.log(
-      `[${id}] kid studio image: ${url ? 'ok' : 'пусто'} за ${Math.round(performance.now() - t0)}ms`,
+      `[${id}] kid studio image: ${s.pipeline.kidStudioImageUrl ? 'ok' : 'пусто'} за ${Math.round(performance.now() - t0)}ms`,
     );
     this.scheduleSave(s);
     return s;
@@ -996,11 +1109,15 @@ export class SessionsService implements OnModuleInit {
       if (!s.pipeline) s.pipeline = {};
       s.pipeline.lekalaLayoutSheetText = sheet;
       s.pipeline.patternTechPackSheetText = sheet;
-      const url = await this.agents.generatePatternLayoutImage(stage2.trim(), {
+      const raw = await this.agents.generatePatternLayoutImage(stage2.trim(), {
         usePreciseStage2: true,
         techPackSheetText: sheet,
       });
-      s.pipeline.patternLayoutImageUrl = url;
+      s.pipeline.patternLayoutImageUrl = await this.persistPipelineImageUrl(
+        s.id,
+        'pattern-layout',
+        raw,
+      );
       this.log.log(
         `[${id}] full pipeline: схема лекал за ${Math.round(performance.now() - t0)}ms`,
       );
