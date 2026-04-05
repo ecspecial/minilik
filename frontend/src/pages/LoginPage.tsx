@@ -33,7 +33,9 @@ export default function LoginPage() {
             : '';
       nav(`/workspace${hash}`, { replace: true });
     } catch {
-      setErr('Ошибка входа. Проверьте данные и что бэкенд запущен.');
+      setErr(
+        'Не удалось войти. Проверьте логин и пароль или попробуйте позже.',
+      );
     } finally {
       setLoading(false);
     }
@@ -45,10 +47,9 @@ export default function LoginPage() {
         <ThemeToggle />
       </div>
       <div className="login-card">
-        <h1 className="brand-title">Вход в демо</h1>
+        <h1 className="brand-title">Вход</h1>
         <p className="muted" style={{ marginTop: 8 }}>
-          Учётная запись задаётся в <code style={{ color: 'var(--accent)' }}>.env</code> бэкенда:{' '}
-          <code>DEMO_USER</code> / <code>DEMO_PASS</code>.
+          Введите логин и пароль, которые вам выдали для доступа к сервису.
         </p>
         <form className="login-form" onSubmit={onSubmit}>
           <div className="login-field">

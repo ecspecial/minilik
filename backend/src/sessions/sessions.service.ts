@@ -13,6 +13,9 @@ import {
   type Scenario,
 } from '../constants/economy-stubs';
 import { calculateLine } from '../economy/economy-calculator';
+import { normalizeIntakeAnalysis } from '../openai/analysis-normalize';
+import { splitPurchasingResponse } from '../openai/parsing-helpers';
+import type { AnalysisPatchDto } from './dto/analysis-patch.dto';
 import type {
   IntakeContext,
   PipelineResult,
@@ -51,7 +54,9 @@ export function buildProductImagePrompt(
   const silhouette = String(analysis.silhouette ?? vs?.silhouette ?? '').trim();
 
   const extraPrompts: string[] = [];
-  if (photoStudio && typeof photoStudio === 'object') {
+  if (typeof photoStudio === 'string' && photoStudio.trim()) {
+    extraPrompts.push(photoStudio.trim().slice(0, 1200));
+  } else if (photoStudio && typeof photoStudio === 'object') {
     const p = photoStudio as Record<string, unknown>;
     const pick = (k: string) => {
       const v = p[k];
@@ -64,7 +69,9 @@ export function buildProductImagePrompt(
     if (typeof vm === 'string' && vm.trim()) extraPrompts.push(vm.trim().slice(0, 500));
   }
 
-  if (marketer && typeof marketer === 'object') {
+  if (typeof marketer === 'string' && marketer.trim()) {
+    extraPrompts.push(marketer.trim().slice(0, 800));
+  } else if (marketer && typeof marketer === 'object') {
     const m = marketer as Record<string, unknown>;
     const brief = m.photoshoot_brief as Record<string, unknown> | undefined;
     if (brief) {
@@ -119,60 +126,97 @@ function extractPurchasingCosts(p: Record<string, unknown>): {
   };
 }
 
-/**
- * Шаг 8 без LLM: тот же каркас JSON, что ожидался от Final Package Assembly.
- * Вкладки — ссылки на уже посчитанные модули; overview — краткая сводка из master.
- */
-function buildFinalPackageLocally(
+/** Полный текст конструктора (этап 1 + опционально этап 2). */
+function getConstructorContext(pipeline: PipelineResult | null | undefined): string {
+  if (!pipeline) return '';
+  const a = typeof pipeline.constructor === 'string' ? pipeline.constructor : '';
+  const b =
+    typeof pipeline.constructorStage2 === 'string' ? pipeline.constructorStage2 : '';
+  if (a && b) {
+    return `${a}\n\n---\nЭтап 2. Точные лекала\n---\n\n${b}`;
+  }
+  return a || b;
+}
+
+/** Шаг 8: сводный текст без JSON. */
+function buildFinalPackageText(
   sessionId: string,
   analysis: Record<string, unknown>,
   pipeline: NonNullable<PipelineResult>,
-): Record<string, unknown> {
-  const id =
-    (typeof analysis.sku_hypothesis_id === 'string' && analysis.sku_hypothesis_id) ||
-    `sku-hyp-${sessionId.replace(/-/g, '').slice(0, 12)}`;
+  analysisReport?: string | null,
+): string {
+  const blocks: string[] = [];
+  blocks.push('ИТОГОВЫЙ ПАКЕТ «УМНЫЙ АССОРТИМЕНТ»');
+  blocks.push(`Сессия: ${sessionId}`);
+  blocks.push(`Собрано: ${new Date().toISOString()}`);
+  blocks.push('');
+  if (analysisReport?.trim()) {
+    blocks.push('=== 1. INTAKE / SKU ===');
+    blocks.push(analysisReport.trim());
+    blocks.push('');
+  }
+  blocks.push('=== Карточка (поля для_confirm) ===');
+  blocks.push(
+    `Тип: ${String(analysis.productType ?? '—')}; сезон: ${String(analysis.season ?? '—')}; силуэт: ${String(analysis.silhouette ?? '—')}`,
+  );
+  blocks.push(`Детали: ${String(analysis.details ?? '—')}`);
+  blocks.push(`Материалы: ${String(analysis.materials ?? '—')}`);
+  blocks.push('');
+  if (typeof pipeline.constructor === 'string' && pipeline.constructor.trim()) {
+    blocks.push('=== 2. КОНСТРУКТОР, этап 1 ===');
+    blocks.push(pipeline.constructor.trim());
+    blocks.push('');
+  }
+  if (typeof pipeline.constructorStage2 === 'string' && pipeline.constructorStage2.trim()) {
+    blocks.push('=== 3. КОНСТРУКТОР, этап 2 (лекала) ===');
+    blocks.push(pipeline.constructorStage2.trim());
+    blocks.push('');
+  }
+  if (typeof pipeline.technologist === 'string' && pipeline.technologist.trim()) {
+    blocks.push('=== 4. ТЕХНОЛОГ ===');
+    blocks.push(pipeline.technologist.trim());
+    blocks.push('');
+  }
+  if (typeof pipeline.purchasingReport === 'string' && pipeline.purchasingReport.trim()) {
+    blocks.push('=== 5. ЗАКУПЩИК ===');
+    blocks.push(pipeline.purchasingReport.trim());
+    blocks.push('');
+  }
+  if (typeof pipeline.finance?.narrative === 'string' && pipeline.finance.narrative.trim()) {
+    blocks.push('=== 6. ФИНАНСИСТ ===');
+    blocks.push(pipeline.finance.narrative.trim());
+    blocks.push('');
+  }
+  if (typeof pipeline.marketer === 'string' && pipeline.marketer.trim()) {
+    blocks.push('=== 7. МАРКЕТОЛОГ ===');
+    blocks.push(pipeline.marketer.trim());
+    blocks.push('');
+  }
+  if (typeof pipeline.photoStudio === 'string' && pipeline.photoStudio.trim()) {
+    blocks.push('=== 8. ФОТО / ВИЗУАЛ ===');
+    blocks.push(pipeline.photoStudio.trim());
+    blocks.push('');
+  }
   const img = pipeline.generatedImageUrl;
-  const imgRef =
-    typeof img === 'string'
-      ? img.startsWith('data:')
-        ? `inline_image:data-url;~${Math.round(img.length / 1024)}KiB`
-        : img.slice(0, 500)
-      : null;
-
-  const unresolved: string[] = [];
-  const notes = analysis.confidenceNotes;
-  if (typeof notes === 'string' && notes.trim()) unresolved.push(notes.trim());
-
-  return {
-    sku_hypothesis_id: id,
-    status: 'assembled_local',
-    assembled_at: new Date().toISOString(),
-    consistency_check: {
-      is_consistent: true,
-      issues: [
-        'Сборка детерминированная на бэкенде без повторной проверки ИИ; противоречия между модулями не анализировались автоматически.',
-      ],
-    },
-    tabs: {
-      overview: {
-        product_type: analysis.productType,
-        season: analysis.season,
-        silhouette: analysis.silhouette,
-        details: analysis.details,
-        materials: analysis.materials,
-        generated_image_ref: imgRef,
-        image_present: Boolean(img),
-      },
-      constructor: pipeline.constructor ?? {},
-      technologist: pipeline.technologist ?? {},
-      buyer: pipeline.purchasing ?? {},
-      finance: pipeline.finance ?? {},
-      marketing: pipeline.marketer ?? {},
-      photo: pipeline.photoStudio ?? {},
-    },
-    unresolved_issues: unresolved,
-    export_readiness: { pdf_ready: false, json_ready: true },
-  };
+  blocks.push('=== Медиа ===');
+  blocks.push(
+    img
+      ? typeof img === 'string' && img.startsWith('data:')
+        ? `Изображение изделия: data-url (~${Math.round(img.length / 1024)} KiB)`
+        : `Изображение изделия: ${String(img).slice(0, 200)}`
+      : 'Изображение изделия: нет',
+  );
+  blocks.push(
+    pipeline.patternLayoutImageUrl
+      ? `Схема лекал: ${String(pipeline.patternLayoutImageUrl).slice(0, 200)}`
+      : 'Схема лекал: нет',
+  );
+  blocks.push('');
+  blocks.push('=== Примечание ===');
+  blocks.push(
+    'Сводка собрана на бэкенде из текстов модулей. Противоречия между блоками не проверялись автоматически.',
+  );
+  return blocks.join('\n');
 }
 
 function resolvePipelineKey(
@@ -205,6 +249,7 @@ export class SessionsService {
       id,
       images: [],
       analysis: null,
+      analysisReport: null,
       analysisApproved: null,
       pipeline: null,
       pipelineMaxStep: 0,
@@ -246,6 +291,7 @@ export class SessionsService {
       return { mimeType, dataUrl };
     });
     s.analysis = null;
+    s.analysisReport = null;
     s.analysisApproved = null;
     s.pipeline = null;
     s.pipelineMaxStep = 0;
@@ -263,7 +309,12 @@ export class SessionsService {
     );
     const t0 = performance.now();
     s.artifactVersions = this.agents.snapshotArtifactVersions();
-    s.analysis = await this.agents.analyzeProduct(urls, s.intakeContext);
+    const { analysis, report } = await this.agents.analyzeProduct(
+      urls,
+      s.intakeContext,
+    );
+    s.analysis = analysis;
+    s.analysisReport = report;
     const ms = Math.round(performance.now() - t0);
     this.log.log(
       `[${id}] анализ изделия: готово за ${ms}ms, productType=${String(s.analysis?.productType ?? '?')}`,
@@ -271,6 +322,55 @@ export class SessionsService {
     s.analysisApproved = null;
     s.pipeline = null;
     s.pipelineMaxStep = 0;
+    return s;
+  }
+
+  patchAnalysis(id: string, patch: AnalysisPatchDto): SessionState {
+    const s = this.get(id);
+    if (!s.analysis) {
+      throw new BadRequestException('Нет результата анализа');
+    }
+    const prev = { ...s.analysis } as Record<string, unknown>;
+    if (patch.productType !== undefined) prev.productType = patch.productType;
+    if (patch.season !== undefined) prev.season = patch.season;
+    if (patch.silhouette !== undefined) prev.silhouette = patch.silhouette;
+    if (patch.details !== undefined) prev.details = patch.details;
+    if (patch.materials !== undefined) prev.materials = patch.materials;
+    if (patch.confidenceNotes !== undefined) {
+      prev.confidenceNotes = patch.confidenceNotes;
+    }
+
+    const hadVs =
+      prev.vision_summary !== null &&
+      typeof prev.vision_summary === 'object' &&
+      !Array.isArray(prev.vision_summary);
+    const touchVs =
+      patch.productType !== undefined ||
+      patch.season !== undefined ||
+      patch.silhouette !== undefined;
+    if (hadVs || touchVs) {
+      const vs = {
+        ...(hadVs
+          ? { ...(prev.vision_summary as Record<string, unknown>) }
+          : {}),
+      };
+      if (patch.productType !== undefined) {
+        vs.product_type = patch.productType;
+      }
+      if (patch.season !== undefined) {
+        vs.season = patch.season;
+      }
+      if (patch.silhouette !== undefined) {
+        vs.silhouette = patch.silhouette;
+      }
+      prev.vision_summary = vs;
+    }
+
+    s.analysis = normalizeIntakeAnalysis(prev);
+    if (patch.analysisReport !== undefined) {
+      s.analysisReport = patch.analysisReport;
+    }
+    this.log.log(`[${id}] карточка анализа обновлена вручную (patch)`);
     return s;
   }
 
@@ -328,6 +428,24 @@ export class SessionsService {
     s.pipelineMaxStep = 0;
     for (let i = 1; i <= 8; i++) {
       await this.runPipelineStepInternal(s, i);
+      if (
+        i === 1 &&
+        s.pipeline &&
+        typeof s.pipeline.constructor === 'string' &&
+        s.pipeline.constructor.trim()
+      ) {
+        try {
+          const s2 = await this.agents.runConstructorStage2Text(
+            s.analysis!,
+            s.pipeline.constructor,
+          );
+          s.pipeline.constructorStage2 = s2;
+          this.log.log(`[${s.id}] full pipeline: точные лекала готовы`);
+          await this.tryAttachPatternLayoutImage(s);
+        } catch (e) {
+          this.log.warn(`[${s.id}] точные лекала пропущены: ${String(e)}`);
+        }
+      }
     }
     this.log.log(
       `[${id}] pipeline (full): ВСЁ ГОТОВО за ${Math.round(performance.now() - pipelineStart)}ms`,
@@ -349,8 +467,10 @@ export class SessionsService {
       s.artifactVersions = this.agents.snapshotArtifactVersions();
 
       const step1Start = performance.now();
-      const constructorJson = await this.agents.runConstructor(analysis);
-      s.pipeline.constructor = constructorJson;
+      const constructorText = await this.agents.runConstructorStage1Text(
+        analysis,
+      );
+      s.pipeline.constructor = constructorText;
       s.pipelineMaxStep = 1;
       this.log.log(
         `[${id}] pipeline step 1 готов за ${Math.round(performance.now() - step1Start)}ms`,
@@ -370,13 +490,16 @@ export class SessionsService {
 
     if (step === 2) {
       this.log.log(`[${id}] pipeline step 2/8: технолог`);
-      const c = s.pipeline.constructor as Record<string, unknown> | undefined;
-      if (!c) {
+      const c = getConstructorContext(s.pipeline);
+      if (!c.trim()) {
         throw new BadRequestException('Нет данных конструктора (шаг 1)');
       }
       const t0 = performance.now();
-      const technologistJson = await this.agents.runTechnologist(analysis, c);
-      s.pipeline.technologist = technologistJson;
+      const technologistText = await this.agents.runTechnologistText(
+        analysis,
+        c,
+      );
+      s.pipeline.technologist = technologistText;
       s.pipelineMaxStep = 2;
       this.log.log(
         `[${id}] pipeline step 2 готов за ${Math.round(performance.now() - t0)}ms`,
@@ -386,19 +509,24 @@ export class SessionsService {
 
     if (step === 3) {
       this.log.log(`[${id}] pipeline step 3/8: закупщик / материалы`);
-      const c = s.pipeline.constructor as Record<string, unknown> | undefined;
-      const tch = s.pipeline.technologist as Record<string, unknown> | undefined;
-      if (!c || !tch) {
+      const c = getConstructorContext(s.pipeline);
+      const tch =
+        typeof s.pipeline.technologist === 'string'
+          ? s.pipeline.technologist
+          : '';
+      if (!c.trim() || !tch.trim()) {
         throw new BadRequestException('Нужны конструктор и технолог (шаги 1–2)');
       }
       const t0 = performance.now();
-      const purchasingJson = await this.agents.runPurchasing(
+      const purchasingRaw = await this.agents.runPurchasingText(
         analysis,
         c,
         tch,
         s.intakeContext,
       );
-      s.pipeline.purchasing = purchasingJson;
+      const { report, costing } = splitPurchasingResponse(purchasingRaw);
+      s.pipeline.purchasingReport = report;
+      s.pipeline.purchasing = costing;
       s.pipelineMaxStep = 3;
       this.log.log(
         `[${id}] pipeline step 3 готов за ${Math.round(performance.now() - t0)}ms`,
@@ -447,50 +575,37 @@ export class SessionsService {
         `[${id}] narrative финансиста за ${Math.round(performance.now() - tNarr)}ms, len=${narrative.length}`,
       );
 
-      let ai_calculation_doc: unknown = null;
-      try {
-        ai_calculation_doc = await this.agents.runFinanceCalculationDoc({
-          master_json: analysis,
-          buyer_json: p,
-          material_cost_summary: {
-            fabricCost,
-            hardwareCost,
-            productionCost,
-          },
-          economy_by_channel: lines as unknown as Record<string, unknown>,
-        });
-      } catch (e) {
-        this.log.warn(`[${id}] runFinanceCalculationDoc: ${String(e)}`);
-      }
-
-      s.pipeline.finance = { lines, narrative, ai_calculation_doc };
+      s.pipeline.finance = { lines, narrative };
       s.pipelineMaxStep = 4;
       return;
     }
 
     if (step === 5) {
       this.log.log(`[${id}] pipeline step 5/8: маркетолог`);
-      const c = s.pipeline.constructor as Record<string, unknown> | undefined;
-      const tch = s.pipeline.technologist as Record<string, unknown> | undefined;
+      const c = getConstructorContext(s.pipeline);
+      const tch =
+        typeof s.pipeline.technologist === 'string'
+          ? s.pipeline.technologist
+          : '';
+      const buyerRep = s.pipeline.purchasingReport ?? '';
       const p = s.pipeline.purchasing as Record<string, unknown> | undefined;
       const fin = s.pipeline.finance;
-      if (!c || !tch || !p || !fin) {
+      if (!c.trim() || !tch.trim() || !p || !fin) {
         throw new BadRequestException('Нужны шаги 1–4 перед маркетингом');
       }
-      const financePayload = {
-        lines: fin.lines,
-        narrative: fin.narrative,
-        ai_calculation_doc: fin.ai_calculation_doc,
-      };
       const t0 = performance.now();
-      const marketerJson = await this.agents.runMarketer(
+      const economyJson = JSON.stringify(fin.lines, null, 2);
+      const costingJson = JSON.stringify(p, null, 2);
+      const marketerText = await this.agents.runMarketerText(
         analysis,
         c,
         tch,
-        p,
-        financePayload as unknown as Record<string, unknown>,
+        buyerRep,
+        costingJson,
+        fin.narrative,
+        economyJson,
       );
-      s.pipeline.marketer = marketerJson;
+      s.pipeline.marketer = marketerText;
       s.pipelineMaxStep = 5;
       this.log.log(
         `[${id}] pipeline step 5 готов за ${Math.round(performance.now() - t0)}ms`,
@@ -500,13 +615,14 @@ export class SessionsService {
 
     if (step === 6) {
       this.log.log(`[${id}] pipeline step 6/8: фото / визуальные промпты`);
-      const m = s.pipeline.marketer as Record<string, unknown> | undefined;
-      if (!m) {
+      const m =
+        typeof s.pipeline.marketer === 'string' ? s.pipeline.marketer : '';
+      if (!m.trim()) {
         throw new BadRequestException('Нет маркетинга (шаг 5)');
       }
       const t0 = performance.now();
-      const photoStudioJson = await this.agents.runPhotoStudio(analysis, m);
-      s.pipeline.photoStudio = photoStudioJson;
+      const photoStudioText = await this.agents.runPhotoStudioText(analysis, m);
+      s.pipeline.photoStudio = photoStudioText;
       s.pipelineMaxStep = 6;
       this.log.log(
         `[${id}] pipeline step 6 готов за ${Math.round(performance.now() - t0)}ms`,
@@ -538,7 +654,12 @@ export class SessionsService {
         throw new BadRequestException('Нет финансового блока (шаг 4)');
       }
       const t0 = performance.now();
-      s.pipeline.finalPackage = buildFinalPackageLocally(id, analysis, s.pipeline);
+      s.pipeline.finalPackage = buildFinalPackageText(
+        id,
+        analysis,
+        s.pipeline,
+        s.analysisReport,
+      );
       s.pipelineMaxStep = 8;
       this.log.log(
         `[${id}] final package (local) за ${Math.round(performance.now() - t0)}ms`,
@@ -619,15 +740,62 @@ export class SessionsService {
     return s;
   }
 
+  /** Схема лекал: только по тексту «точные лекала» (этап 2), иначе размеры на рисунке ненадёжны. */
+  async runPatternLayoutImage(id: string): Promise<SessionState> {
+    const s = this.get(id);
+    const stage2 = s.pipeline?.constructorStage2;
+    if (typeof stage2 !== 'string' || !stage2.trim()) {
+      throw new BadRequestException(
+        'Сначала выполните этап «точные лекала» (конструктор, этап 2). Схема строится только по нему — без этого значения на изображении будут приблизительными.',
+      );
+    }
+    const stage1 = s.pipeline?.constructor;
+    if (typeof stage1 !== 'string' || !stage1.trim()) {
+      throw new BadRequestException('Нужен черновой конструктор (шаг 1 цепочки)');
+    }
+    const t0 = performance.now();
+    const url = await this.agents.generatePatternLayoutImage(stage2.trim(), {
+      usePreciseStage2: true,
+    });
+    if (!s.pipeline) s.pipeline = {};
+    s.pipeline.patternLayoutImageUrl = url;
+    this.log.log(
+      `[${id}] pattern layout image: ${url ? 'ok' : 'пусто'} за ${Math.round(performance.now() - t0)}ms`,
+    );
+    return s;
+  }
+
+  private async tryAttachPatternLayoutImage(s: SessionState): Promise<void> {
+    const stage2 = s.pipeline?.constructorStage2;
+    if (typeof stage2 !== 'string' || !stage2.trim()) return;
+    const id = s.id;
+    try {
+      const t0 = performance.now();
+      const url = await this.agents.generatePatternLayoutImage(stage2.trim(), {
+        usePreciseStage2: true,
+      });
+      if (!s.pipeline) s.pipeline = {};
+      s.pipeline.patternLayoutImageUrl = url;
+      this.log.log(
+        `[${id}] full pipeline: схема лекал за ${Math.round(performance.now() - t0)}ms`,
+      );
+    } catch (e) {
+      this.log.warn(
+        `[${id}] полный прогон: схема лекал пропущена (${String(e)})`,
+      );
+    }
+  }
+
   /** §12 draft-лекала → инструкции рендера */
   async runPatternRender(id: string): Promise<unknown> {
     const s = this.get(id);
-    if (!s.analysis || !s.pipeline?.constructor) {
+    const ctx = s.pipeline ? getConstructorContext(s.pipeline) : '';
+    if (!s.analysis || !ctx.trim()) {
       throw new BadRequestException('Нужны анализ и блок конструктора');
     }
-    const result = await this.agents.runPatternRenderInterpreter(
+    const result = await this.agents.runPatternRenderInterpreterText(
       s.analysis,
-      s.pipeline.constructor as Record<string, unknown>,
+      ctx,
     );
     if (!s.pipeline) s.pipeline = {};
     s.pipeline.patternRender = result;
@@ -638,13 +806,36 @@ export class SessionsService {
   async runMarketPriceHelp(id: string): Promise<unknown> {
     const s = this.get(id);
     if (!s.pipeline?.purchasing) {
-      throw new BadRequestException('Нужен buyer_json (шаг 3)');
+      throw new BadRequestException('Нужен блок закупщика (шаг 3)');
     }
     const p = s.pipeline.purchasing as Record<string, unknown>;
-    return this.agents.runMarketPriceEstimate({
+    return this.agents.runMarketPriceEstimateText({
       fabric_candidates: p.fabric_options ?? [],
       trim_candidates: p.trim_list ?? [],
       market_context: p.price_sources ?? {},
     });
+  }
+
+  /** Конструктор этап 2 (точные лекала) — между шагом 1 и 2, без смены pipelineMaxStep */
+  async runConstructorStage2(id: string): Promise<SessionState> {
+    const s = this.get(id);
+    if (s.pipelineMaxStep < 1) {
+      throw new BadRequestException('Сначала выполните шаг 1 (конструктор)');
+    }
+    const stage1 = s.pipeline?.constructor;
+    if (typeof stage1 !== 'string' || !stage1.trim()) {
+      throw new BadRequestException('Нет текста этапа 1 конструктора');
+    }
+    const t0 = performance.now();
+    const stage2 = await this.agents.runConstructorStage2Text(
+      s.analysis!,
+      stage1,
+    );
+    if (!s.pipeline) s.pipeline = {};
+    s.pipeline.constructorStage2 = stage2;
+    this.log.log(
+      `[${id}] конструктор этап 2 готов за ${Math.round(performance.now() - t0)}ms`,
+    );
+    return s;
   }
 }

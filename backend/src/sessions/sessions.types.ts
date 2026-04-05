@@ -12,25 +12,31 @@ export type SessionImage = {
 
 /** Результат цепочки; поля по мере шагов 1–8 (8 — финальный пакет). */
 export type PipelineResult = {
+  /** Этап 1 конструктора — текст по new-update.txt */
   constructor?: unknown;
+  /** Этап 2 — точные лекала (опционально, отдельная кнопка) */
+  constructorStage2?: string;
   technologist?: unknown;
+  /** JSON-слой для калькулятора (из ###CALC_JSON###) */
   purchasing?: unknown;
+  /** Текст закупщика для людей */
+  purchasingReport?: string;
   finance?: {
     lines: Record<
       SalesChannel,
       Record<Scenario, EconomyLine>
     >;
     narrative: string;
-    /** §5 структурированный слой поверх тех же цифр */
-    ai_calculation_doc?: unknown;
   };
   marketer?: unknown;
   photoStudio?: unknown;
   /** null = шаг 7 выполнен, картинки нет */
   generatedImageUrl?: string | null;
-  /** §8 Final Package Assembly */
+  /** Схема лекал по конструктору (ручной вызов, image API) */
+  patternLayoutImageUrl?: string | null;
+  /** Итоговый текстовый пакет */
   finalPackage?: unknown;
-  /** §12 опциональный интерпретатор лекал (ручной вызов API) */
+  /** Интерпретатор лекал — текст */
   patternRender?: unknown;
 };
 
@@ -38,6 +44,8 @@ export type SessionState = {
   id: string;
   images: SessionImage[];
   analysis: Record<string, unknown> | null;
+  /** Текстовый отчёт intake (промпт new-update §1) */
+  analysisReport?: string | null;
   analysisApproved: boolean | null;
   pipeline: PipelineResult | null;
   /** Последний успешно выполненный шаг (1…8) */

@@ -1,6 +1,8 @@
 import axios from 'axios';
-import { useCallback, useEffect, useLayoutEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { AssistantTextPanel } from '../components/ModuleChatPanel';
+import { PRODUCT_TYPES } from '../constants/productTypes';
 import { ThemeToggle } from '../ThemeToggle';
 import { ANCHOR_STORAGE_KEY } from '../workspaceSections';
 import {
@@ -9,11 +11,10 @@ import {
   createSession,
   getSession,
   type IntakeContextPayload,
-  mergeModule,
+  patchAnalysis,
   patchIntakeContext,
-  recalculateModule,
-  runMarketPriceEstimateTool,
-  runPatternRenderTool,
+  runConstructorStage2,
+  runPatternLayoutImageTool,
   runPipeline,
   runPipelineStep,
   setAuthToken,
@@ -26,6 +27,7 @@ type SessionPayload = {
   id: string;
   images: { mimeType: string; dataUrl: string }[];
   analysis: Analysis | null;
+  analysisReport?: string | null;
   analysisApproved: boolean | null;
   pipeline: Record<string, unknown> | null;
   pipelineMaxStep?: number;
@@ -35,77 +37,86 @@ type SessionPayload = {
 
 const STORAGE_KEY = 'mvp_session_id';
 
-/** Шаги цепочки после подтверждения анализа (порядок из client-update) */
+/** Шаги цепочки после подтверждения анализа */
 const CHAIN_STEPS = [
   {
     step: 1,
-    title: 'Конструктор + draft-лекала',
+    title: 'Конструктор (черновик)',
     userText:
-      'Конструкция, детали кроя, мерки, ТЗ на лекала, preliminary patterns (не production-ready).',
+      'Техлист и описание кроя: конструкция, мерки, детали, черновое ТЗ на лекала. Это не рабочие лекала для производства — уточнение на следующем шаге.',
   },
   {
     step: 2,
     title: 'Технолог',
     userText:
-      'Операции, оборудование, швы и обработки — с опорой на конструктор.',
+      'Последовательность операций, оборудование, типы швов и обработок — строго опираясь на вывод конструктора.',
   },
   {
     step: 3,
-    title: 'Закупщик / материалы',
+    title: 'Закупщик и материалы',
     userText:
-      'Ткани, фурнитура, расход, cost base для экономики (оценки помечать источником).',
+      'Ткани, фурнитура, ориентировочный расход, себестоимость материалов; оценки подписываются, откуда взяты.',
   },
   {
     step: 4,
     title: 'Финансист',
     userText:
-      'Сетки WB / Ozon / сайт на бэкенде + текстовый разбор ИИ. WB база: сумма % от цены ~55% (логистика отдельно).',
+      'Сетки юнит-экономики по каналам (например WB, Ozon, свой сайт) и поясняющий текст ИИ. Для WB в базовой модели сумма процентов от цены около 55%, логистика считается отдельно.',
   },
   {
     step: 5,
     title: 'Маркетолог',
     userText:
-      'SEO, буллеты, описание, позиционирование, brief для съёмки — только из подтверждённых продуктовых данных.',
+      'SEO-поля, буллеты, описание, позиционирование и задание на съёмку — только из утверждённых фактов по изделию.',
   },
   {
     step: 6,
-    title: 'Фото / визуал (промпты)',
+    title: 'Фото и визуал',
     userText:
-      'Промпты для каталога, белого фона, lifestyle — без искажения фасона (master + marketing).',
+      'Готовые описания кадров для каталога, белого фона и lifestyle — без искажения посадки и силуэта модели.',
   },
   {
     step: 7,
-    title: 'Генерация картинки',
+    title: 'Картинка изделия',
     userText:
-      'Изображение по API; тип изделия зафиксирован в промпте.',
+      'Вариант визуализации модели в нужном типе изделия — для презентации идей; не заменяет профессиональную съёмку.',
   },
   {
     step: 8,
-    title: 'Сборка финального пакета',
+    title: 'Финальный пакет',
     userText:
-      'Единый JSON поверх модулей, финдиска и сгенерированного изображения.',
+      'Один связный документ: кратко, что вы согласовали и какие выводы по всем направлениям.',
   },
 ] as const;
 
-function JsonBlock({
-  title,
-  data,
-  id,
-}: {
-  title: string;
-  data: unknown;
-  id?: string;
-}) {
-  if (data === undefined) return null;
-  return (
-    <div id={id} className="card panel workspace-anchor">
-      <div className="panel-header">
-        <span className="panel-badge">JSON</span>
-        <h2 style={{ margin: 0 }}>{title}</h2>
-      </div>
-      <pre className="pre">{JSON.stringify(data, null, 2)}</pre>
-    </div>
-  );
+function pipelineStr(
+  pipeline: Record<string, unknown> | null | undefined,
+  key: string,
+): string {
+  if (!pipeline) return '';
+  const v = pipeline[key];
+  return typeof v === 'string' ? v : '';
+}
+
+function hasPrecisePatterns(
+  pipeline: Record<string, unknown> | null | undefined,
+): boolean {
+  return pipelineStr(pipeline, 'constructorStage2').trim().length > 0;
+}
+
+/** Если нет полного текста intake — собираем из полей карточки */
+function buildFallbackAnalysisText(a: Analysis): string {
+  const lines: string[] = [
+    `Тип изделия (справочник): ${String(a.productType ?? '—')}`,
+    `Сезон: ${String(a.season ?? '—')}`,
+    `Силуэт: ${String(a.silhouette ?? '—')}`,
+    `Детали: ${String(a.details ?? '—')}`,
+    `Материалы: ${String(a.materials ?? '—')}`,
+  ];
+  if (a.confidenceNotes != null && String(a.confidenceNotes).trim()) {
+    lines.push(`Комментарий: ${String(a.confidenceNotes)}`);
+  }
+  return lines.join('\n\n');
 }
 
 function SpinnerBlock({ label }: { label: string }) {
@@ -135,11 +146,16 @@ export default function WorkspacePage() {
   );
   const [intakeDraft, setIntakeDraft] = useState<IntakeContextPayload>({});
   const [toolBusy, setToolBusy] = useState<string | null>(null);
-  const [lastMarketEstimate, setLastMarketEstimate] = useState<unknown>(null);
-  const [advRecalcModule, setAdvRecalcModule] = useState('constructor');
-  const [advRecalcInputsJson, setAdvRecalcInputsJson] = useState('{}');
-  const [advMergeModule, setAdvMergeModule] = useState('constructor');
-  const [advMergeEditsJson, setAdvMergeEditsJson] = useState('{}');
+  const [analysisEditing, setAnalysisEditing] = useState(false);
+  const [analysisDraft, setAnalysisDraft] = useState({
+    reportText: '',
+    productType: '',
+    season: '',
+    silhouette: '',
+    details: '',
+    materials: '',
+    confidenceNotes: '',
+  });
 
   const token = localStorage.getItem('mvp_token');
   useEffect(() => {
@@ -171,7 +187,7 @@ export default function WorkspacePage() {
           setSessionId(null);
           setSession(null);
           setErr(
-            'Сессия на сервере недоступна (возможен перезапуск). Не удалось создать новую.',
+            'Предыдущая сессия недоступна. Начата новая.',
           );
         }
         return;
@@ -184,6 +200,10 @@ export default function WorkspacePage() {
     if (!session?.id) return;
     setIntakeDraft({ ...(session.intakeContext ?? {}) });
   }, [session?.id]);
+
+  useEffect(() => {
+    if (session?.analysisApproved != null) setAnalysisEditing(false);
+  }, [session?.analysisApproved]);
 
   useEffect(() => {
     if (!token) return;
@@ -211,7 +231,8 @@ export default function WorkspacePage() {
         setSessionId(id);
         await refresh(id);
       } catch {
-        if (!cancelled) setErr('Не удалось создать сессию. Запустите бэкенд.');
+        if (!cancelled)
+          setErr('Не удалось начать работу. Проверьте подключение и попробуйте обновить страницу.');
       }
     })();
 
@@ -227,7 +248,7 @@ export default function WorkspacePage() {
     const scrollToTarget = () => {
       const el = document.getElementById(id);
       if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       }
     };
     scrollToTarget();
@@ -277,7 +298,7 @@ export default function WorkspacePage() {
       await analyze(sessionId);
       await refresh(sessionId);
     } catch {
-      setErr('Ошибка анализа. Проверьте доступность ИИ-сервиса и настройки бэкенда.');
+      setErr('Не удалось выполнить анализ. Попробуйте позже или обратитесь в поддержку.');
     } finally {
       setBusy(null);
     }
@@ -291,89 +312,83 @@ export default function WorkspacePage() {
       await patchIntakeContext(sessionId, intakeDraft);
       await refresh(sessionId);
     } catch {
-      setErr('Не удалось сохранить контекст intake.');
+      setErr('Не удалось сохранить дополнительные уточнения.');
     } finally {
       setBusy(null);
     }
   }
 
-  async function onPatternRenderTool() {
+  async function onPatternLayoutImageTool() {
     if (!sessionId) return;
     setErr(null);
-    setToolBusy('pattern');
+    setToolBusy('patternLayout');
     try {
-      await runPatternRenderTool(sessionId);
+      await runPatternLayoutImageTool(sessionId);
       await refresh(sessionId);
     } catch {
-      setErr('Инструмент «лекала → рендер» недоступен или данных недостаточно.');
+      setErr(
+        'Не удалось построить схему. Убедитесь, что сначала сформированы точные лекала, и повторите. Если ошибка повторяется — напишите в поддержку.',
+      );
     } finally {
       setToolBusy(null);
     }
   }
 
-  async function onMarketPriceTool() {
+  function startAnalysisEdit() {
+    if (!analysis) return;
+    const reportFromApi = session?.analysisReport?.trim();
+    setAnalysisDraft({
+      reportText: reportFromApi
+        ? String(session.analysisReport)
+        : buildFallbackAnalysisText(analysis),
+      productType: String(analysis.productType ?? ''),
+      season: String(analysis.season ?? ''),
+      silhouette: String(analysis.silhouette ?? ''),
+      details: String(analysis.details ?? ''),
+      materials: String(analysis.materials ?? ''),
+      confidenceNotes: String(analysis.confidenceNotes ?? ''),
+    });
+    setAnalysisEditing(true);
+  }
+
+  async function saveAnalysisEdit() {
     if (!sessionId) return;
     setErr(null);
-    setToolBusy('market');
+    setBusy('analysisPatch');
     try {
-      const res = await runMarketPriceEstimateTool(sessionId);
-      setLastMarketEstimate(res);
+      await patchAnalysis(sessionId, {
+        analysisReport: analysisDraft.reportText.trim()
+          ? analysisDraft.reportText
+          : undefined,
+        productType: analysisDraft.productType || undefined,
+        season: analysisDraft.season || undefined,
+        silhouette: analysisDraft.silhouette || undefined,
+        details: analysisDraft.details || undefined,
+        materials: analysisDraft.materials || undefined,
+        confidenceNotes: analysisDraft.confidenceNotes || undefined,
+      });
+      setAnalysisEditing(false);
+      await refresh(sessionId);
     } catch {
-      setErr('Оценка рыночных цен недоступна или нет данных закупщика.');
-      setLastMarketEstimate(null);
+      setErr('Не удалось сохранить правки карточки.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function onConstructorStage2() {
+    if (!sessionId) return;
+    setErr(null);
+    setToolBusy('constructor2');
+    try {
+      await runConstructorStage2(sessionId);
+      await refresh(sessionId);
+    } catch {
+      setErr(
+        'Сначала нужен готовый черновик конструктора (первый шаг). Дождитесь его и повторите.',
+      );
     } finally {
       setToolBusy(null);
-    }
-  }
-
-  async function onRecalculateModule() {
-    if (!sessionId) return;
-    let updatedInputs: Record<string, unknown> | undefined;
-    try {
-      const parsed = JSON.parse(advRecalcInputsJson || '{}') as unknown;
-      updatedInputs =
-        parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-          ? (parsed as Record<string, unknown>)
-          : {};
-    } catch {
-      setErr('JSON «новые входы» для пересчёта должен быть объектом.');
-      return;
-    }
-    setErr(null);
-    setBusy('recalc');
-    try {
-      await recalculateModule(sessionId, advRecalcModule, updatedInputs);
-      await refresh(sessionId);
-    } catch {
-      setErr('Пересчёт модуля не выполнен (проверьте имя модуля и шаги цепочки).');
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function onMergeModule() {
-    if (!sessionId) return;
-    let userEdits: Record<string, unknown>;
-    try {
-      const parsed = JSON.parse(advMergeEditsJson || '{}') as unknown;
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        setErr('Правки для merge должны быть JSON-объектом.');
-        return;
-      }
-      userEdits = parsed as Record<string, unknown>;
-    } catch {
-      setErr('Некорректный JSON правок для merge.');
-      return;
-    }
-    setErr(null);
-    setBusy('merge');
-    try {
-      await mergeModule(sessionId, advMergeModule, userEdits);
-      await refresh(sessionId);
-    } catch {
-      setErr('Слияние правок не выполнено.');
-    } finally {
-      setBusy(null);
     }
   }
 
@@ -391,6 +406,29 @@ export default function WorkspacePage() {
     }
   }
 
+  async function onRunNextPipelineStep() {
+    if (!sessionId) return;
+    const next = (session?.pipelineMaxStep ?? 0) + 1;
+    if (next > 8) return;
+    setErr(null);
+    setBusy('pipeline');
+    setPipelineLoadingStep(next);
+    try {
+      const meta = CHAIN_STEPS[next - 1];
+      document.title = `MiniLik — шаг ${next}/8: ${meta.title}`;
+      await runPipelineStep(sessionId, next);
+      await refresh(sessionId);
+    } catch {
+      setErr(
+        'На этом шаге возникла ошибка. Завершите предыдущие этапы и попробуйте снова или обратитесь в поддержку.',
+      );
+    } finally {
+      setPipelineLoadingStep(null);
+      setBusy(null);
+      document.title = 'MiniLik — кабинет';
+    }
+  }
+
   async function onRunChain() {
     if (!sessionId) return;
     setErr(null);
@@ -403,7 +441,7 @@ export default function WorkspacePage() {
         await refresh(sessionId);
       } catch {
         setErr(
-          'Ошибка цепочки. Проверьте подтверждение анализа и настройки платформы.',
+          'Не удалось выполнить все этапы подряд. Убедитесь, что карточка изделия подтверждена, и попробуйте ещё раз.',
         );
       } finally {
         setBusy(null);
@@ -411,24 +449,7 @@ export default function WorkspacePage() {
       return;
     }
 
-    setBusy('pipeline');
-    try {
-      for (let i = 1; i <= 8; i++) {
-        setPipelineLoadingStep(i);
-        const meta = CHAIN_STEPS[i - 1];
-        document.title = `MiniLik — шаг ${i}/8: ${meta.title}`;
-        await runPipelineStep(sessionId, i);
-        await refresh(sessionId);
-      }
-    } catch {
-      setErr(
-        'Ошибка на шаге цепочки. Попробуйте снова или используйте «Всё сразу».',
-      );
-    } finally {
-      setPipelineLoadingStep(null);
-      setBusy(null);
-      document.title = 'MiniLik — кабинет';
-    }
+    await onRunNextPipelineStep();
   }
 
   function logout() {
@@ -459,8 +480,31 @@ export default function WorkspacePage() {
 
   const analysis = session?.analysis;
 
+  const productTypeOptions = useMemo(() => {
+    const t = analysisDraft.productType.trim();
+    if (t && !(PRODUCT_TYPES as readonly string[]).includes(t)) {
+      return [t, ...PRODUCT_TYPES];
+    }
+    return [...PRODUCT_TYPES];
+  }, [analysisDraft.productType]);
+
+  const intakeDisplayText = useMemo(() => {
+    if (!analysis) return '';
+    const r = session?.analysisReport?.trim();
+    if (r) return String(session.analysisReport);
+    return buildFallbackAnalysisText(analysis);
+  }, [analysis, session?.analysisReport]);
+
+  const showStickyNext =
+    !!token &&
+    session?.analysisApproved === true &&
+    chainMode === 'progressive' &&
+    maxPipeline < 8;
+
   return (
-    <div className="app-shell">
+    <div
+      className={`app-shell${showStickyNext ? ' app-shell--with-sticky-cta' : ''}`}
+    >
       <div className="layout">
         <header className="page-header">
           <div className="brand">
@@ -493,12 +537,13 @@ export default function WorkspacePage() {
               сезон, силуэт, детали, материалы).
             </li>
             <li>
-              <strong>Вы подтверждаете</strong> — если всё верно, запускается
-              цепочка специализированных ассистентов.
+              <strong>Вы подтверждаете</strong> — если всё верно, система
+              последовательно готовит материалы по направлениям: конструкция,
+              технология, закупки, финансы, маркетинг и далее.
             </li>
             <li>
-              <strong>Отчёт по шагам</strong> — вы видите результат каждого
-              этапа по мере готовности (в режиме «Пошагово»).
+              <strong>Отчёт по шагам</strong> — можно идти по одному шагу и
+              проверять результат (режим «Пошагово») или запустить всё подряд.
             </li>
           </ol>
 
@@ -520,7 +565,7 @@ export default function WorkspacePage() {
             { n: 1, t: 'Фото', d: 'Загрузка 1–3 снимков' },
             { n: 2, t: 'Анализ ИИ', d: 'Распознавание по фото' },
             { n: 3, t: 'Ваше «да»', d: 'Подтверждение карточки' },
-            { n: 4, t: 'Цепочка ИИ', d: '8 внутренних шагов' },
+            { n: 4, t: 'Этапы отчёта', d: 'Восемь разделов подряд' },
             { n: 5, t: 'Итог', d: 'Все блоки на экране' },
           ].map((it) => (
             <div
@@ -541,11 +586,12 @@ export default function WorkspacePage() {
         <section className="card panel">
           <div className="panel-header">
             <span className="panel-badge">До анализа</span>
-            <h2>Контекст до анализа (опционально)</h2>
+            <h2>Дополнительно до анализа (по желанию)</h2>
           </div>
           <p className="panel-desc">
-            Уточнения бренда, коллекции, канала и цены попадают в промпт анализа и
-            закупщика. Можно оставить пустым.
+            Бренд, коллекция, канал, ориентир по цене и комментарий учитываются при
+            анализе фото и на этапе закупки. Все поля необязательны — можно
+            оставить пустым.
           </p>
           <div
             className="grid-econ"
@@ -599,7 +645,7 @@ export default function WorkspacePage() {
               onClick={onSaveIntake}
               disabled={!sessionId || busy !== null}
             >
-              {busy === 'intake' ? 'Сохранение…' : 'Сохранить контекст'}
+              {busy === 'intake' ? 'Сохранение…' : 'Сохранить уточнения'}
             </button>
           </div>
         </section>
@@ -611,8 +657,8 @@ export default function WorkspacePage() {
           </div>
           <p className="panel-desc">
             Нажмите на квадрат, чтобы добавить снимки (до 3). Миниатюры можно
-            снять крестиком до отправки. После отправки файлы сохраняются на
-            сервере и используются при распознавании.
+            убрать крестиком до отправки. После отправки фото используются при
+            распознавании изделия.
           </p>
           <div className="file-picker-row">
             {/*
@@ -715,13 +761,13 @@ export default function WorkspacePage() {
               onClick={onUpload}
               disabled={!sessionId || !files.length || busy !== null}
             >
-              {busy === 'upload' ? 'Отправка…' : 'Отправить фото на сервер'}
+              {busy === 'upload' ? 'Отправка…' : 'Загрузить фото'}
             </button>
           </div>
           {files.length > 0 && !sessionId && (
             <p className="muted" style={{ marginTop: 8 }}>
-              Сессия ещё не готова — дождитесь ответа бэкенда или обновите
-              страницу. Без сессии отправка недоступна.
+              Подождите пару секунд, пока система подготовится, или обновите
+              страницу. Пока подготовка не завершена, загрузка недоступна.
             </p>
           )}
         </section>
@@ -737,7 +783,7 @@ export default function WorkspacePage() {
             справочника; остальные поля — по результатам распознавания.
           </p>
           {busy === 'analyze' && (
-            <SpinnerBlock label="ИИ разбирает фото и формирует JSON… Первый ответ может занять 10–30 секунд." />
+            <SpinnerBlock label="Идёт разбор фото и подготовка отчёта… Обычно 10–30 секунд." />
           )}
           <button
             type="button"
@@ -755,40 +801,217 @@ export default function WorkspacePage() {
               <h2>Что получилось</h2>
             </div>
             <p className="panel-desc">
-              Проверьте тип и описание. Если всё ок — подтвердите, иначе отклоните
-              и загрузите другие фото.
+              Один текст от ИИ — его можно править. Структурные поля карточки
+              (тип из справочника и др.) — в блоке ниже. Подтвердите, когда всё
+              верно.
             </p>
-            <div className="row" style={{ marginBottom: 8 }}>
-              <span className="tag tag-a">тип изделия — из справочника</span>
+            <div className="row" style={{ marginBottom: 8, flexWrap: 'wrap' }}>
+              {session?.analysisApproved == null && !analysisEditing && (
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={startAnalysisEdit}
+                  disabled={busy !== null}
+                >
+                  Редактировать текст и карточку
+                </button>
+              )}
             </div>
-            <ul className="analysis-list">
-              <li>
-                <strong>Тип изделия:</strong>{' '}
-                {String(analysis.productType ?? '—')}
-              </li>
-              <li>
-                <strong>Сезон:</strong> {String(analysis.season ?? '—')}
-              </li>
-              <li>
-                <strong>Силуэт:</strong>{' '}
-                {String(analysis.silhouette ?? '—')}
-              </li>
-              <li>
-                <strong>Детали:</strong> {String(analysis.details ?? '—')}
-              </li>
-              <li>
-                <strong>Материалы:</strong>{' '}
-                {String(analysis.materials ?? '—')}
-              </li>
-              {analysis.confidenceNotes != null &&
-                String(analysis.confidenceNotes) && (
-                  <li className="muted">
-                    <strong>Комментарий:</strong>{' '}
-                    {String(analysis.confidenceNotes)}
-                  </li>
-                )}
-            </ul>
-            {session?.analysisApproved == null && (
+            {analysisEditing && session?.analysisApproved == null ? (
+              <div
+                className="analysis-edit-grid"
+                style={{
+                  display: 'grid',
+                  gap: 12,
+                  marginTop: 8,
+                }}
+              >
+                <label
+                  className="muted"
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 4,
+                    gridColumn: '1 / -1',
+                  }}
+                >
+                  Основной текст отчёта
+                  <textarea
+                    className="pre chat-msg-bubble--scroll"
+                    style={{
+                      minHeight: 200,
+                      padding: 10,
+                      fontFamily: 'inherit',
+                      lineHeight: 1.45,
+                    }}
+                    value={analysisDraft.reportText}
+                    onChange={(e) =>
+                      setAnalysisDraft((d) => ({
+                        ...d,
+                        reportText: e.target.value,
+                      }))
+                    }
+                    disabled={busy !== null}
+                  />
+                </label>
+                <details className="analysis-meta-fold" open>
+                  <summary>Карточка изделия (справочник и поля)</summary>
+                  <div
+                    className="analysis-edit-grid"
+                    style={{
+                      display: 'grid',
+                      gap: 12,
+                      padding: '0 1rem 1rem',
+                    }}
+                  >
+                    <label className="muted" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      Тип изделия
+                      <select
+                        className="pre"
+                        style={{ padding: 8, fontFamily: 'inherit' }}
+                        value={analysisDraft.productType}
+                        onChange={(e) =>
+                          setAnalysisDraft((d) => ({
+                            ...d,
+                            productType: e.target.value,
+                          }))
+                        }
+                        disabled={busy !== null}
+                      >
+                        {productTypeOptions.map((t) => (
+                          <option key={t} value={t}>
+                            {t}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {(
+                      [
+                        ['season', 'Сезон'],
+                        ['silhouette', 'Силуэт'],
+                      ] as const
+                    ).map(([key, label]) => (
+                      <label
+                        key={key}
+                        className="muted"
+                        style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
+                      >
+                        {label}
+                        <input
+                          type="text"
+                          className="pre"
+                          style={{ padding: 8, fontFamily: 'inherit' }}
+                          value={analysisDraft[key]}
+                          onChange={(e) =>
+                            setAnalysisDraft((d) => ({
+                              ...d,
+                              [key]: e.target.value,
+                            }))
+                          }
+                          disabled={busy !== null}
+                        />
+                      </label>
+                    ))}
+                    {(
+                      [
+                        ['details', 'Детали'],
+                        ['materials', 'Материалы'],
+                        ['confidenceNotes', 'Комментарий'],
+                      ] as const
+                    ).map(([key, label]) => (
+                      <label
+                        key={key}
+                        className="muted"
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 4,
+                          gridColumn: '1 / -1',
+                        }}
+                      >
+                        {label}
+                        <textarea
+                          className="pre"
+                          style={{
+                            minHeight: key === 'confidenceNotes' ? 100 : 72,
+                            padding: 8,
+                            fontFamily: 'inherit',
+                          }}
+                          value={analysisDraft[key]}
+                          onChange={(e) =>
+                            setAnalysisDraft((d) => ({
+                              ...d,
+                              [key]: e.target.value,
+                            }))
+                          }
+                          disabled={busy !== null}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </details>
+                <div className="row" style={{ gridColumn: '1 / -1' }}>
+                  <button
+                    type="button"
+                    onClick={saveAnalysisEdit}
+                    disabled={busy !== null}
+                  >
+                    {busy === 'analysisPatch'
+                      ? 'Сохранение…'
+                      : 'Сохранить правки'}
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => setAnalysisEditing(false)}
+                    disabled={busy !== null}
+                  >
+                    Отмена
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <AssistantTextPanel
+                  title="Отчёт ИИ"
+                  badgeLabel="Текст"
+                  scrollable
+                >
+                  {intakeDisplayText}
+                </AssistantTextPanel>
+                <details className="analysis-meta-fold">
+                  <summary>Карточка изделия (тип из справочника и поля)</summary>
+                  <ul className="analysis-list">
+                    <li>
+                      <strong>Тип изделия:</strong>{' '}
+                      {String(analysis.productType ?? '—')}
+                    </li>
+                    <li>
+                      <strong>Сезон:</strong> {String(analysis.season ?? '—')}
+                    </li>
+                    <li>
+                      <strong>Силуэт:</strong>{' '}
+                      {String(analysis.silhouette ?? '—')}
+                    </li>
+                    <li>
+                      <strong>Детали:</strong> {String(analysis.details ?? '—')}
+                    </li>
+                    <li>
+                      <strong>Материалы:</strong>{' '}
+                      {String(analysis.materials ?? '—')}
+                    </li>
+                    {analysis.confidenceNotes != null &&
+                      String(analysis.confidenceNotes) && (
+                        <li className="muted">
+                          <strong>Комментарий:</strong>{' '}
+                          {String(analysis.confidenceNotes)}
+                        </li>
+                      )}
+                  </ul>
+                </details>
+              </>
+            )}
+            {session?.analysisApproved == null && !analysisEditing && (
               <div className="row" style={{ marginTop: 12 }}>
                 <button
                   type="button"
@@ -826,13 +1049,20 @@ export default function WorkspacePage() {
             <h2>ИИ-цепочка (8 этапов)</h2>
           </div>
           <p className="panel-desc">
-            После подтверждения: конструктор → технолог → закупщик → финансист →
-            маркетолог → фото-промпты → генерация изделия → финальный пакет,
-            как в ТЗ MiniLik / client-update.
+            На каждом шаге вы получаете готовый текст: что сделано и на что
+            опираться дальше.{' '}
+            <strong>Пошагово</strong> — выполняете этапы по одному: после чернового
+            конструктора сначала получите <strong>точные лекала</strong>, при
+            необходимости — <strong>схему-картинку</strong> (чтобы цифры на схеме
+            были опираемыми на модель, сначала нужны точные лекала), затем
+            нажимайте «Следующий шаг» к
+            технологу. <strong>Всё сразу</strong> — система сама пройдёт все восемь
+            этапов подряд: после черновика посчитает точные лекала и по ним
+            построит схему, если это технически возможно.
           </p>
 
           <p className="muted" style={{ marginBottom: 8 }}>
-            Как показывать результат:
+            Как удобнее работать:
           </p>
           <div className="choice-row">
             <button
@@ -841,7 +1071,7 @@ export default function WorkspacePage() {
               onClick={() => setChainMode('progressive')}
               disabled={busy !== null || session?.analysisApproved !== true}
             >
-              Пошагово (видно каждый этап)
+              Пошагово
             </button>
             <button
               type="button"
@@ -849,20 +1079,27 @@ export default function WorkspacePage() {
               onClick={() => setChainMode('full')}
               disabled={busy !== null || session?.analysisApproved !== true}
             >
-              Всё сразу (один длинный запрос)
+              Всё сразу
             </button>
           </div>
 
-          <ul className="hero-list" style={{ marginTop: 12 }}>
-            {CHAIN_STEPS.map((s) => (
-              <li key={s.step}>
-                <strong>
-                  {s.step}. {s.title}
-                </strong>{' '}
-                — {s.userText}
-              </li>
-            ))}
-          </ul>
+          <details
+            className="analysis-meta-fold"
+            style={{ marginTop: 12 }}
+            open={chainMode === 'full'}
+          >
+            <summary>Все 8 этапов (кратко)</summary>
+            <ul className="hero-list" style={{ margin: 0 }}>
+              {CHAIN_STEPS.map((s) => (
+                <li key={s.step}>
+                  <strong>
+                    {s.step}. {s.title}
+                  </strong>{' '}
+                  — {s.userText}
+                </li>
+              ))}
+            </ul>
+          </details>
 
           {chainMode === 'progressive' &&
             busy === 'pipeline' &&
@@ -873,168 +1110,143 @@ export default function WorkspacePage() {
             )}
 
           {chainMode === 'full' && busy === 'pipeline' && (
-            <SpinnerBlock label="Выполняется полная цепочка — до нескольких минут. Результат появится сразу целиком." />
+            <SpinnerBlock label="Полная цепочка: шаги 1–8, после конструктора — автоматически точные лекала и схема. До нескольких минут; блоки появятся ниже по мере готовности." />
           )}
 
-          <div className="row" style={{ marginTop: 12 }}>
+          <div className="row chain-panel-progress" style={{ marginTop: 12 }}>
             <button
               type="button"
               onClick={onRunChain}
-              disabled={session?.analysisApproved !== true || busy !== null}
+              disabled={
+                session?.analysisApproved !== true ||
+                busy !== null ||
+                (chainMode === 'progressive' && maxPipeline >= 8)
+              }
             >
               {busy === 'pipeline'
                 ? 'Идёт обработка…'
-                : 'Запустить ИИ-отчёт'}
+                : chainMode === 'full'
+                  ? 'Запустить всю цепочку (1–8)'
+                  : maxPipeline >= 8
+                    ? 'Все шаги выполнены'
+                    : `Следующий шаг ${maxPipeline + 1}/8 — ${CHAIN_STEPS[maxPipeline].title}`}
             </button>
-            {maxPipeline > 0 && maxPipeline < 8 && !busy && (
-              <span className="muted">
-                Готово шагов цепочки: {maxPipeline}/8
-              </span>
+            {maxPipeline > 0 && maxPipeline < 8 && busy !== 'pipeline' && (
+              <span>Готово: {maxPipeline}/8</span>
             )}
-            {maxPipeline >= 8 && !busy && (
-              <span className="muted">Цепочка завершена (8/8)</span>
-            )}
+            {maxPipeline >= 8 && busy !== 'pipeline' && <span>Цепочка 8/8</span>}
           </div>
         </section>
 
-        <section className="card panel">
-          <div className="panel-header">
-            <span className="panel-badge">Инструменты</span>
-            <h2>Дополнительные инструменты</h2>
-          </div>
-          <p className="panel-desc">
-            Интерпретация draft-лекал и рыночные ориентиры по данным закупщика —
-            отдельные вызовы API после соответствующих шагов.
-          </p>
-          <div className="row">
-            <button
-              type="button"
-              className="secondary"
-              onClick={onPatternRenderTool}
-              disabled={
-                !sessionId ||
-                toolBusy !== null ||
-                busy !== null ||
-                !pipeline?.constructor
-              }
+        {pipelineStr(pipeline, 'constructor').trim() ? (
+          <>
+            <AssistantTextPanel
+              id="module-constructor"
+              title="Конструктор: черновой техлист"
+              badgeLabel="Раздел"
             >
-              {toolBusy === 'pattern' ? 'Запрос…' : 'Лекала → инструкции рендера'}
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              onClick={onMarketPriceTool}
-              disabled={
-                !sessionId ||
-                toolBusy !== null ||
-                busy !== null ||
-                !pipeline?.purchasing
-              }
+              {pipelineStr(pipeline, 'constructor')}
+            </AssistantTextPanel>
+            <section className="card panel">
+              <div className="panel-header">
+                <span className="panel-badge">Конструктор</span>
+                <h2 style={{ margin: 0 }}>Точные лекала и схема</h2>
+              </div>
+              <p className="panel-desc">
+                Черновик выше описывает модель в целом.{' '}
+                <strong>Точные лекала</strong> — отдельный проход: конкретные
+                размеры и формы деталей. Схема-картинка лекал строится{' '}
+                <strong>только по тексту точных лекал</strong>, чтобы на чертеже
+                были согласованные значения; без этапа 2 кнопка схемы неактивна.
+              </p>
+              <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={onConstructorStage2}
+                  disabled={
+                    !sessionId ||
+                    toolBusy !== null ||
+                    busy === 'pipeline' ||
+                    maxPipeline < 1
+                  }
+                >
+                  {toolBusy === 'constructor2'
+                    ? 'Запрос…'
+                    : 'Сформировать точные лекала'}
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={onPatternLayoutImageTool}
+                  disabled={
+                    !sessionId ||
+                    toolBusy !== null ||
+                    busy === 'pipeline' ||
+                    !hasPrecisePatterns(pipeline)
+                  }
+                >
+                  {toolBusy === 'patternLayout'
+                    ? 'Генерация…'
+                    : 'Схема лекал (картинка)'}
+                </button>
+              </div>
+              {!hasPrecisePatterns(pipeline) ? (
+                <p className="muted" style={{ marginTop: 10, marginBottom: 0 }}>
+                  Схема станет доступна после формирования точных лекал.
+                </p>
+              ) : null}
+            </section>
+            {pipelineStr(pipeline, 'constructorStage2').trim() ? (
+              <AssistantTextPanel
+                id="module-constructor-2"
+                title="Точные лекала"
+                badgeLabel="Раздел"
+              >
+                {pipelineStr(pipeline, 'constructorStage2')}
+              </AssistantTextPanel>
+            ) : null}
+            <section
+              id="module-pattern-layout"
+              className="card panel workspace-anchor"
             >
-              {toolBusy === 'market' ? 'Запрос…' : 'Ориентиры рыночных цен'}
-            </button>
-          </div>
-          {lastMarketEstimate != null && (
-            <pre className="pre" style={{ marginTop: 12, maxHeight: 320 }}>
-              {JSON.stringify(lastMarketEstimate, null, 2)}
-            </pre>
-          )}
-        </section>
-
-        <section className="card panel">
-          <div className="panel-header">
-            <span className="panel-badge">Правки</span>
-            <h2>Пересчёт модуля и ручные правки</h2>
-          </div>
-          <p className="panel-desc">
-            Имена модулей: <code>constructor</code>, <code>technologist</code>,{' '}
-            <code>purchasing</code>, <code>marketer</code>, <code>photoStudio</code>.
-            Finance через этот UI не пересчитывается — повторите шаг 4 цепочки.
-          </p>
-          <div className="row" style={{ flexWrap: 'wrap', gap: 12 }}>
-            <label className="muted">
-              Модуль
-              <input
-                type="text"
-                value={advRecalcModule}
-                onChange={(e) => setAdvRecalcModule(e.target.value)}
-                disabled={busy !== null}
-                style={{ marginLeft: 8 }}
-              />
-            </label>
-          </div>
-          <label className="muted" style={{ display: 'block', marginTop: 8 }}>
-            Новые входы (JSON-объект)
-            <textarea
-              className="pre"
-              style={{ width: '100%', minHeight: 80, marginTop: 4 }}
-              value={advRecalcInputsJson}
-              onChange={(e) => setAdvRecalcInputsJson(e.target.value)}
-              disabled={busy !== null}
-            />
-          </label>
-          <button
-            type="button"
-            className="secondary"
-            onClick={onRecalculateModule}
-            disabled={!sessionId || busy !== null}
-          >
-            {busy === 'recalc' ? 'Пересчёт…' : 'Пересчитать модуль'}
-          </button>
-          <hr style={{ margin: '16px 0', borderColor: 'var(--border)' }} />
-          <div className="row" style={{ flexWrap: 'wrap', gap: 12 }}>
-            <label className="muted">
-              Модуль для merge
-              <input
-                type="text"
-                value={advMergeModule}
-                onChange={(e) => setAdvMergeModule(e.target.value)}
-                disabled={busy !== null}
-                style={{ marginLeft: 8 }}
-              />
-            </label>
-          </div>
-          <label className="muted" style={{ display: 'block', marginTop: 8 }}>
-            Правки пользователя (JSON-объект)
-            <textarea
-              className="pre"
-              style={{ width: '100%', minHeight: 80, marginTop: 4 }}
-              value={advMergeEditsJson}
-              onChange={(e) => setAdvMergeEditsJson(e.target.value)}
-              disabled={busy !== null}
-            />
-          </label>
-          <button
-            type="button"
-            className="secondary"
-            onClick={onMergeModule}
-            disabled={!sessionId || busy !== null}
-          >
-            {busy === 'merge' ? 'Слияние…' : 'Слить правки'}
-          </button>
-        </section>
-
-        {pipeline?.constructor != null && (
-          <JsonBlock
-            id="module-constructor"
-            title="Конструктор"
-            data={pipeline.constructor}
-          />
-        )}
-        {pipeline?.technologist != null && (
-          <JsonBlock
-            id="module-technologist"
-            title="Технолог"
-            data={pipeline.technologist}
-          />
-        )}
-        {pipeline?.purchasing != null && (
-          <JsonBlock
+              <div className="panel-header">
+                <span className="panel-badge">Визуал</span>
+                <h2 style={{ margin: 0 }}>Схема лекал (изображение)</h2>
+              </div>
+              {typeof (pipeline as { patternLayoutImageUrl?: string })
+                .patternLayoutImageUrl === 'string' &&
+                String(
+                  (pipeline as { patternLayoutImageUrl?: string })
+                    .patternLayoutImageUrl,
+                ).length > 0 && (
+                  <img
+                    className="gen"
+                    style={{ marginTop: 16 }}
+                    src={
+                      (pipeline as { patternLayoutImageUrl: string })
+                        .patternLayoutImageUrl
+                    }
+                    alt="Схематичное изображение лекал по конструктору"
+                  />
+                )}
+            </section>
+          </>
+        ) : null}
+        {pipelineStr(pipeline, 'technologist').trim() ? (
+          <AssistantTextPanel id="module-technologist" title="Технолог" badgeLabel="Раздел">
+            {pipelineStr(pipeline, 'technologist')}
+          </AssistantTextPanel>
+        ) : null}
+        {pipelineStr(pipeline, 'purchasingReport').trim() ? (
+          <AssistantTextPanel
             id="module-purchasing"
             title="Закупщик"
-            data={pipeline.purchasing}
-          />
-        )}
+            badgeLabel="Раздел"
+          >
+            {pipelineStr(pipeline, 'purchasingReport')}
+          </AssistantTextPanel>
+        ) : null}
 
         {pipeline != null &&
           typeof pipeline.finance === 'object' &&
@@ -1048,63 +1260,51 @@ export default function WorkspacePage() {
                 <h2>Юнит-экономика (черновик)</h2>
               </div>
               <p className="panel-desc">
-                Цифры считает бэкенд по заглушкам; текст ниже — комментарий ИИ.
-                WB: в базовом сценарии сумма процентовых отчислений от цены = 55%
-                (см. подпись у строк WB база).
+                Ниже — ориентировочные расчёты по каналам продаж и пояснение в
+                свободной форме. Цифры для рабочих решений нужно сверить со своими
+                договорами и тарифами. Для WB в базовом сценарии сумма типовых
+                отчислений от цены около 55%; логистика уточняется отдельно.
               </p>
-              <div className="pre" style={{ maxHeight: 'none', marginBottom: 12 }}>
+              <AssistantTextPanel
+                variant="embedded"
+                title="Комментарий ИИ"
+              >
                 {String(
                   (pipeline.finance as { narrative?: string }).narrative ?? '',
                 )}
-              </div>
+              </AssistantTextPanel>
               <FinanceGrid finance={pipeline.finance as Record<string, unknown>} />
             </section>
           )}
 
-        {pipeline != null &&
-          typeof pipeline.finance === 'object' &&
-          pipeline.finance !== null &&
-          (pipeline.finance as { ai_calculation_doc?: unknown })
-            .ai_calculation_doc != null && (
-            <JsonBlock
-              id="module-finance-doc"
-              title="Структурированный финансовый документ (AI)"
-              data={
-                (pipeline.finance as { ai_calculation_doc?: unknown })
-                  .ai_calculation_doc
-              }
-            />
-          )}
-
-        {pipeline?.finalPackage != null && (
-          <JsonBlock
+        {typeof pipeline?.finalPackage === 'string' &&
+        pipeline.finalPackage.trim() ? (
+          <AssistantTextPanel
             id="module-final-package"
             title="Финальный пакет"
-            data={pipeline.finalPackage}
-          />
-        )}
-        {pipeline?.patternRender != null && (
-          <JsonBlock
-            id="module-pattern-render"
-            title="Интерпретация лекал для рендера"
-            data={pipeline.patternRender}
-          />
-        )}
-
-        {pipeline?.marketer != null && (
-          <JsonBlock
+            badgeLabel="Итог"
+          >
+            {pipeline.finalPackage}
+          </AssistantTextPanel>
+        ) : null}
+        {pipelineStr(pipeline, 'marketer').trim() ? (
+          <AssistantTextPanel
             id="module-marketer"
             title="Маркетолог"
-            data={pipeline.marketer}
-          />
-        )}
-        {pipeline?.photoStudio != null && (
-          <JsonBlock
+            badgeLabel="Раздел"
+          >
+            {pipelineStr(pipeline, 'marketer')}
+          </AssistantTextPanel>
+        ) : null}
+        {pipelineStr(pipeline, 'photoStudio').trim() ? (
+          <AssistantTextPanel
             id="module-photo"
-            title="Фото-студия (ТЗ)"
-            data={pipeline.photoStudio}
-          />
-        )}
+            title="Фото / визуал (ТЗ)"
+            badgeLabel="Раздел"
+          >
+            {pipelineStr(pipeline, 'photoStudio')}
+          </AssistantTextPanel>
+        ) : null}
 
         {typeof pipeline?.generatedImageUrl === 'string' &&
           pipeline.generatedImageUrl.length > 0 && (
@@ -1127,6 +1327,25 @@ export default function WorkspacePage() {
             </section>
           )}
       </div>
+
+      {showStickyNext ? (
+        <div className="workspace-sticky-cta" role="region" aria-label="Следующий шаг цепочки">
+          <div className="workspace-sticky-cta-inner">
+            <span className="sticky-meta">
+              Шаг {maxPipeline + 1}/8 — {CHAIN_STEPS[maxPipeline].title}
+            </span>
+            <button
+              type="button"
+              onClick={onRunChain}
+              disabled={busy !== null}
+            >
+              {busy === 'pipeline'
+                ? 'Идёт шаг…'
+                : `Далее: ${CHAIN_STEPS[maxPipeline].title}`}
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

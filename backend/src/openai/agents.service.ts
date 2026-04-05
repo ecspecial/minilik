@@ -11,22 +11,27 @@ import type { SalesChannel } from '../constants/economy-stubs';
 import { normalizeIntakeAnalysis } from './analysis-normalize';
 import { formatErr, withTiming } from './ai-logger';
 import {
-  BUYER_SYSTEM,
-  CONSTRUCTOR_SYSTEM,
-  FINANCE_CALC_DOC_SYSTEM,
-  FINANCE_NARRATIVE_SYSTEM,
   HUMAN_EDIT_MERGE_SYSTEM,
-  INTAKE_SYSTEM,
   JSON_REPAIR_SYSTEM,
-  MARKETING_SYSTEM,
-  MARKET_PRICE_ESTIMATE_SYSTEM,
   MODULE_RECALCULATION_SYSTEM,
-  PATTERN_RENDER_INTERPRETER_SYSTEM,
-  PHOTO_VISUAL_SYSTEM,
-  PROMPT_CONFIG_VERSION,
-  TECHNOLOGIST_SYSTEM,
+  PROMPT_CONFIG_VERSION as LEGACY_PROMPT_VER,
   withGlobalRules,
 } from './prompts/client-prompts';
+import {
+  BUYER_TEXT_BODY,
+  CONSTRUCTOR_STAGE1_BODY,
+  CONSTRUCTOR_STAGE2_BODY,
+  FINANCE_NARRATIVE_NEW_BODY,
+  INTAKE_SYNC_EXTRACT_BODY,
+  INTAKE_TEXT_BODY,
+  MARKETER_TEXT_BODY,
+  MARKET_PRICE_TEXT_BODY,
+  PHOTO_TEXT_BODY,
+  PATTERN_RENDER_TEXT_BODY,
+  PROMPT_CONFIG_VERSION,
+  TECHNOLOGIST_TEXT_BODY,
+  withNewUpdate,
+} from './prompts/new-update-text';
 
 @Injectable()
 export class AgentsService {
@@ -49,7 +54,7 @@ export class AgentsService {
 
   snapshotArtifactVersions(): ArtifactVersions {
     return {
-      prompt_config_version: PROMPT_CONFIG_VERSION,
+      prompt_config_version: `${PROMPT_CONFIG_VERSION};legacy=${LEGACY_PROMPT_VER}`,
       schema_version: SCHEMA_VERSION,
       calculation_rules_version: CALCULATION_RULES_VERSION,
       model_version: this.model,
@@ -59,14 +64,10 @@ export class AgentsService {
   async analyzeProduct(
     imageDataUrls: string[],
     intakeContext?: IntakeContext | null,
-  ): Promise<Record<string, unknown>> {
-    const list = PRODUCT_TYPES.join(', ');
-    const system = withGlobalRules(INTAKE_SYSTEM);
+  ): Promise<{ analysis: Record<string, unknown>; report: string }> {
+    const system = withNewUpdate(INTAKE_TEXT_BODY);
     const ctx = intakeContext ?? {};
-    const userText = `Закрытый справочник типов (vision_summary.product_type — ТОЧНО одна строка из списка):
-[${list}]
-
-Вход (как в ТЗ §1.2; пустые строки игнорируй):
+    const userText = `Вход (пустые поля игнорируй):
 - brand: ${JSON.stringify(ctx.brand ?? '')}
 - collection: ${JSON.stringify(ctx.collection ?? '')}
 - user_comment: ${JSON.stringify(ctx.user_comment ?? '')}
@@ -76,7 +77,7 @@ export class AgentsService {
 - season_hint: ${JSON.stringify(ctx.season_hint ?? '')}
 - source_images_count: ${imageDataUrls.length}
 
-Создай initial SKU hypothesis по фото. При конфликте фото vs текст — укажи в JSON. Верни только JSON по схеме из system.`;
+Дай отчёт по фото в требуемом порядке разделов.`;
 
     const userContent: OpenAI.Chat.ChatCompletionContentPart[] = [
       { type: 'text', text: userText },
@@ -84,59 +85,79 @@ export class AgentsService {
     for (const url of imageDataUrls) {
       userContent.push({ type: 'image_url', image_url: { url } });
     }
-    const raw = await this.chatJson('analyzeProduct', system, userContent, {
-      imageCount: String(imageDataUrls.length),
-    });
-    return normalizeIntakeAnalysis(raw);
-  }
-
-  async runConstructor(
-    masterJson: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
-    const system = withGlobalRules(CONSTRUCTOR_SYSTEM);
-    return this.chatJson('runConstructor', system, [
-      {
-        type: 'text',
-        text: `master_json:\n${JSON.stringify(masterJson, null, 2)}\n\nСформируй предварительное конструкторское решение и draft-лекала. Верни только JSON.`,
-      },
-    ]);
-  }
-
-  async runTechnologist(
-    masterJson: Record<string, unknown>,
-    constructorJson: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
-    const system = withGlobalRules(TECHNOLOGIST_SYSTEM);
-    return this.chatJson('runTechnologist', system, [
-      {
-        type: 'text',
-        text: `master_json:\n${JSON.stringify(masterJson, null, 2)}\n\nconstructor_json:\n${JSON.stringify(constructorJson, null, 2)}\n\nСформируй технологическую карту. Верни только JSON.`,
-      },
-    ]);
-  }
-
-  async runPurchasing(
-    masterJson: Record<string, unknown>,
-    constructorJson: Record<string, unknown>,
-    technologistJson: Record<string, unknown>,
-    intakeContext?: IntakeContext | null,
-  ): Promise<Record<string, unknown>> {
-    const system = withGlobalRules(BUYER_SYSTEM);
-    const ic = intakeContext ?? {};
-    const placeholders = {
-      provided_material_prices: ic.price_hint
-        ? { note: ic.price_hint, source: 'user_hint' }
-        : {},
-      provided_trim_prices: {},
-      market_price_context: ic.price_hint
-        ? String(ic.price_hint)
-        : 'не передан — используй осторожные estimated_market ориентиры',
-      width_and_density_context: 'не передан',
+    const report = await this.chatText('analyzeProductText', system, userContent);
+    const list = PRODUCT_TYPES.join(', ');
+    const syncSystem = `${INTAKE_SYNC_EXTRACT_BODY}\n\nВерни только один JSON-объект, без markdown и пояснений.`;
+    const raw = await this.chatJson(
+      'analyzeProductSync',
+      syncSystem,
+      [
+        {
+          type: 'text',
+          text: `Список типов (поле productType — ТОЧНО одна строка из этого списка):\n[${list}]\n\nТекст отчёта intake:\n${report}`,
+        },
+      ],
+      { imageCount: String(imageDataUrls.length) },
+    );
+    return {
+      analysis: normalizeIntakeAnalysis(raw),
+      report: report.trim(),
     };
-    return this.chatJson('runPurchasing', system, [
+  }
+
+  async runConstructorStage1Text(
+    masterJson: Record<string, unknown>,
+  ): Promise<string> {
+    const system = withNewUpdate(CONSTRUCTOR_STAGE1_BODY);
+    return this.chatText('runConstructorStage1', system, [
       {
         type: 'text',
-        text: `master_json:\n${JSON.stringify(masterJson, null, 2)}\n\nconstructor_json:\n${JSON.stringify(constructorJson, null, 2)}\n\ntechnologist_json:\n${JSON.stringify(technologistJson, null, 2)}\n\nКонтекст цен и подсказок:\n${JSON.stringify(placeholders, null, 2)}\n\nСформируй buyer_json. Верни только JSON.`,
+        text: `Подтверждённые параметры (master):\n${JSON.stringify(masterJson, null, 2)}\n\nВыполни этап 1 конструктора.`,
+      },
+    ]);
+  }
+
+  async runConstructorStage2Text(
+    masterJson: Record<string, unknown>,
+    stage1Text: string,
+  ): Promise<string> {
+    const system = withNewUpdate(CONSTRUCTOR_STAGE2_BODY);
+    return this.chatText('runConstructorStage2', system, [
+      {
+        type: 'text',
+        text: `master:\n${JSON.stringify(masterJson, null, 2)}\n\nЭтап 1 (техлист):\n${stage1Text}\n\nВыполни этап 2 — точные лекала.`,
+      },
+    ]);
+  }
+
+  async runTechnologistText(
+    masterJson: Record<string, unknown>,
+    constructorContext: string,
+  ): Promise<string> {
+    const system = withNewUpdate(TECHNOLOGIST_TEXT_BODY);
+    return this.chatText('runTechnologist', system, [
+      {
+        type: 'text',
+        text: `master:\n${JSON.stringify(masterJson, null, 2)}\n\nКонструктор (текст этапов 1–2):\n${constructorContext}`,
+      },
+    ]);
+  }
+
+  async runPurchasingText(
+    masterJson: Record<string, unknown>,
+    constructorContext: string,
+    technologistText: string,
+    intakeContext?: IntakeContext | null,
+  ): Promise<string> {
+    const system = withNewUpdate(BUYER_TEXT_BODY);
+    const ic = intakeContext ?? {};
+    const hints = `Контекст закупки:
+- price_hint: ${ic.price_hint ?? 'нет'}
+- user_comment: ${ic.user_comment ?? 'нет'}`;
+    return this.chatText('runPurchasing', system, [
+      {
+        type: 'text',
+        text: `master:\n${JSON.stringify(masterJson, null, 2)}\n\nКонструктор:\n${constructorContext.slice(0, 12000)}\n\nТехнолог:\n${technologistText.slice(0, 8000)}\n\n${hints}\n\nСформируй ответ закупщика и блок ###CALC_JSON###.`,
       },
     ]);
   }
@@ -149,61 +170,46 @@ export class AgentsService {
       Record<string, Record<string, unknown>>
     >;
   }): Promise<string> {
-    const system = withGlobalRules(FINANCE_NARRATIVE_SYSTEM);
+    const system = withNewUpdate(FINANCE_NARRATIVE_NEW_BODY);
     const payload = JSON.stringify(input, null, 2);
     this.logger.log(
       `runFinanceNarrative: размер payload ~${payload.length} символов`,
     );
     return this.chatText('runFinanceNarrative', system, [
-      { type: 'text', text: payload },
-    ]);
-  }
-
-  /** §5 структурированный finance-json поверх данных бэкенда */
-  async runFinanceCalculationDoc(input: {
-    master_json: Record<string, unknown>;
-    buyer_json: Record<string, unknown>;
-    material_cost_summary: {
-      fabricCost: number;
-      hardwareCost: number;
-      productionCost: number;
-    };
-    economy_by_channel: Record<string, unknown>;
-  }): Promise<Record<string, unknown>> {
-    const system = withGlobalRules(FINANCE_CALC_DOC_SYSTEM);
-    return this.chatJson('runFinanceCalculationDoc', system, [
       {
         type: 'text',
-        text: `${JSON.stringify(input, null, 2)}\n\nОформи ответ по схеме. Числа full_cost и помесячные итоги должны соответствовать переданным расчётам.`,
+        text: `Данные для интерпретации (расчёты и закупка):\n${payload}`,
       },
     ]);
   }
 
-  async runMarketer(
+  async runMarketerText(
     masterJson: Record<string, unknown>,
-    constructorJson: Record<string, unknown>,
-    technologistJson: Record<string, unknown>,
-    buyerJson: Record<string, unknown>,
-    financeJson: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
-    const system = withGlobalRules(MARKETING_SYSTEM);
-    return this.chatJson('runMarketer', system, [
+    constructorContext: string,
+    technologistText: string,
+    buyerReport: string,
+    purchasingCostingJson: string,
+    financeNarrative: string,
+    economyJson: string,
+  ): Promise<string> {
+    const system = withNewUpdate(MARKETER_TEXT_BODY);
+    return this.chatText('runMarketer', system, [
       {
         type: 'text',
-        text: `master_json:\n${JSON.stringify(masterJson, null, 2)}\n\nconstructor_json:\n${JSON.stringify(constructorJson, null, 2)}\n\ntechnologist_json:\n${JSON.stringify(technologistJson, null, 2)}\n\nbuyer_json:\n${JSON.stringify(buyerJson, null, 2)}\n\nfinance_json:\n${JSON.stringify(financeJson, null, 2)}\n\nСформируй маркетинговый пакет. Верни только JSON.`,
+        text: `master:\n${JSON.stringify(masterJson, null, 2)}\n\nКонструктор:\n${constructorContext.slice(0, 10000)}\n\nТехнолог:\n${technologistText.slice(0, 6000)}\n\nЗакупщик (текст):\n${buyerReport.slice(0, 6000)}\n\nСводка cost (JSON для контекста):\n${purchasingCostingJson.slice(0, 4000)}\n\nФинансист (текст):\n${financeNarrative.slice(0, 6000)}\n\nСетки каналов (JSON):\n${economyJson.slice(0, 8000)}`,
       },
     ]);
   }
 
-  async runPhotoStudio(
+  async runPhotoStudioText(
     masterJson: Record<string, unknown>,
-    marketingJson: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
-    const system = withGlobalRules(PHOTO_VISUAL_SYSTEM);
-    return this.chatJson('runPhotoStudio', system, [
+    marketerText: string,
+  ): Promise<string> {
+    const system = withNewUpdate(PHOTO_TEXT_BODY);
+    return this.chatText('runPhotoStudio', system, [
       {
         type: 'text',
-        text: `master_json:\n${JSON.stringify(masterJson, null, 2)}\n\nmarketing_json:\n${JSON.stringify(marketingJson, null, 2)}\n\nСформируй визуальный пакет промптов. Верни только JSON.`,
+        text: `master:\n${JSON.stringify(masterJson, null, 2)}\n\nМаркетолог:\n${marketerText.slice(0, 10000)}`,
       },
     ]);
   }
@@ -251,66 +257,118 @@ export class AgentsService {
     ]);
   }
 
-  async runPatternRenderInterpreter(
+  async runPatternRenderInterpreterText(
     masterJson: Record<string, unknown>,
-    constructorJson: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
-    const system = withGlobalRules(PATTERN_RENDER_INTERPRETER_SYSTEM);
-    return this.chatJson('runPatternRenderInterpreter', system, [
+    constructorContext: string,
+  ): Promise<string> {
+    const system = withNewUpdate(PATTERN_RENDER_TEXT_BODY);
+    return this.chatText('runPatternRenderInterpreter', system, [
       {
         type: 'text',
-        text: `master_json:\n${JSON.stringify(masterJson, null, 2)}\n\nconstructor_json:\n${JSON.stringify(constructorJson, null, 2)}`,
+        text: `master:\n${JSON.stringify(masterJson, null, 2)}\n\nКонструктор:\n${constructorContext.slice(0, 14000)}`,
       },
     ]);
   }
 
-  async runMarketPriceEstimate(input: {
+  async runMarketPriceEstimateText(input: {
     fabric_candidates: unknown;
     trim_candidates: unknown;
     market_context: unknown;
-  }): Promise<Record<string, unknown>> {
-    const system = withGlobalRules(MARKET_PRICE_ESTIMATE_SYSTEM);
-    return this.chatJson('runMarketPriceEstimate', system, [
-      { type: 'text', text: JSON.stringify(input, null, 2) },
+  }): Promise<string> {
+    const system = withNewUpdate(MARKET_PRICE_TEXT_BODY);
+    return this.chatText('runMarketPriceEstimate', system, [
+      {
+        type: 'text',
+        text: `Входные данные (ориентиры):\n${JSON.stringify(input, null, 2)}`,
+      },
     ]);
   }
 
+  /** Каталожный фотореалистичный кадр изделия (шаг 7 цепочки). */
   async generateGalleryImage(prompt: string): Promise<string | null> {
+    return this.generateOpenAiImage(prompt, {
+      operation: 'images.generate.gallery',
+      styleSuffix:
+        'Photorealistic catalog shot, neutral background, no text or watermark.',
+    });
+  }
+
+  /**
+   * Схематичное изображение лекал. Для совпадения чисел на чертеже с моделью передавайте текст точных лекал и usePreciseStage2: true.
+   */
+  async generatePatternLayoutImage(
+    constructorContext: unknown,
+    opts?: { usePreciseStage2?: boolean },
+  ): Promise<string | null> {
+    const ctx =
+      constructorContext !== null && typeof constructorContext === 'object'
+        ? JSON.stringify(constructorContext, null, 2)
+        : String(constructorContext ?? '');
+    const trimmed = ctx.length > 16000 ? `${ctx.slice(0, 16000)}\n…` : ctx;
+    const precise = opts?.usePreciseStage2 === true;
+    const prompt = precise
+      ? `КРИТИЧНО: ниже — ТЕХЛИСТ ТОЧНЫХ ЛЕКАЛ (этап 2): конкретные размеры в см, формы деталей, проймы, оката и т.д.
+Сгенерируй технический чертёж выкроек, который максимально СООТВЕТСТВУЕТ этим числам и описанию деталей (перед, спинка, рукав и др.). Не выдумывай другие пропорции.
+
+Данные этапа 2 (используй как единственный источник истины для геометрии):
+${trimmed}
+
+Визуал: вид сверху / разложенные детали, тонкие чёткие линии, светлый фон, без фото модели и без фактуры ткани, только схема лекал. Минимум подписей. Без логотипов.`
+      : `Задача: по конструкторскому техлисту (этапы 1 и при наличии 2) построй визуализацию лекал.
+
+Исходные данные конструктора:
+${trimmed}
+
+Сгенерируй изображение лекал: технический чертёж выкроек, вид сверху или детали на плоскости, чёткие контуры, светлый фон, без фотовизуала и фактуры ткани — схема lekala. Подписи минимальны. Без логотипов.`;
+
+    return this.generateOpenAiImage(prompt, {
+      operation: 'images.generate.patternLayout',
+      styleSuffix:
+        'Technical sewing pattern line art only, high contrast, flat diagram, no photorealistic person, no runway photo.',
+    });
+  }
+
+  private async generateOpenAiImage(
+    prompt: string,
+    opts: { operation: string; styleSuffix: string },
+  ): Promise<string | null> {
     const model = this.config.get<string>('OPENAI_IMAGE_MODEL');
     if (!model) {
-      this.logger.log('generateGalleryImage: OPENAI_IMAGE_MODEL пуст — шаг пропущен');
+      this.logger.log(
+        `${opts.operation}: OPENAI_IMAGE_MODEL пуст — генерация пропущена`,
+      );
       return null;
     }
     const promptLen = prompt.length;
     return withTiming(
-      'images.generate',
+      opts.operation,
       { model, promptChars: promptLen },
       async () => {
         try {
           const img = await this.client.images.generate({
             model,
-            prompt: `${prompt}\n\nPhotorealistic catalog shot, neutral background, no text or watermark.`,
+            prompt: `${prompt}\n\n${opts.styleSuffix}`,
             size: '1024x1024',
             n: 1,
           });
           const first = img.data?.[0];
           const url = first?.url;
           if (url) {
-            this.logger.log('images.generate: получен URL');
+            this.logger.log(`${opts.operation}: получен URL`);
             return url;
           }
           const b64 = first?.b64_json;
           if (b64) {
             this.logger.log(
-              `images.generate: получен b64, len=${b64.length}`,
+              `${opts.operation}: получен b64, len=${b64.length}`,
             );
             return `data:image/png;base64,${b64}`;
           }
-          this.logger.warn('images.generate: пустой ответ (нет url и b64)');
+          this.logger.warn(`${opts.operation}: пустой ответ (нет url и b64)`);
           return null;
         } catch (e) {
           this.logger.warn(
-            `images.generate: ошибка API (цепочка продолжится без картинки): ${formatErr(e)}`,
+            `${opts.operation}: ошибка API: ${formatErr(e)}`,
           );
           return null;
         }

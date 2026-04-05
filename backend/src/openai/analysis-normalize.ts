@@ -35,7 +35,7 @@ export function normalizeIntakeAnalysis(
     ? keyEl.map(String).join(', ')
     : String(data.details ?? '—');
 
-  const uncertain = vs?.uncertain_points;
+  const uncertain = vs?.uncertain_points ?? data.uncertain_points;
   const iq = data.input_quality as Record<string, unknown> | undefined;
   const issues = iq?.issues;
   const parts: string[] = [];

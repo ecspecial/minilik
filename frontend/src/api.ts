@@ -51,6 +51,24 @@ export async function analysisDecision(sessionId: string, approved: boolean) {
   return data;
 }
 
+export type AnalysisPatchPayload = {
+  productType?: string;
+  season?: string;
+  silhouette?: string;
+  details?: string;
+  materials?: string;
+  confidenceNotes?: string;
+  analysisReport?: string;
+};
+
+export async function patchAnalysis(
+  sessionId: string,
+  patch: AnalysisPatchPayload,
+) {
+  const { data } = await api.patch(`/sessions/${sessionId}/analysis`, patch);
+  return data;
+}
+
 /** Шаг цепочки 1…8 (шаг 1 сбрасывает предыдущий отчёт на бэкенде). */
 export async function runPipelineStep(sessionId: string, step: number) {
   const { data } = await api.post(
@@ -110,6 +128,20 @@ export async function mergeModule(
 export async function runPatternRenderTool(sessionId: string) {
   const { data } = await api.post(
     `/sessions/${sessionId}/tools/pattern-render`,
+  );
+  return data;
+}
+
+export async function runPatternLayoutImageTool(sessionId: string) {
+  const { data } = await api.post(
+    `/sessions/${sessionId}/tools/pattern-layout-image`,
+  );
+  return data;
+}
+
+export async function runConstructorStage2(sessionId: string) {
+  const { data } = await api.post(
+    `/sessions/${sessionId}/constructor-stage-2`,
   );
   return data;
 }

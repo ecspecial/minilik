@@ -81,40 +81,48 @@ export default function LandingPage() {
 
   return (
     <div className="landing-page">
-      <div className="landing-topbar">
-        <ThemeToggle />
-        {token ? (
-          <button
-            type="button"
-            className="landing-link-btn"
-            onClick={() => nav('/workspace')}
-          >
-            Кабинет
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="landing-link-btn"
-            onClick={() => nav('/login')}
-          >
-            Войти
-          </button>
-        )}
+      <div className="landing-top-wrap">
+        <div className="landing-top-cluster">
+          <div className="landing-topbar">
+            <ThemeToggle />
+            {token ? (
+              <button
+                type="button"
+                className="landing-link-btn"
+                onClick={() => nav('/workspace')}
+              >
+                Кабинет
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="landing-link-btn"
+                onClick={() => nav('/login')}
+              >
+                Войти
+              </button>
+            )}
+          </div>
+          <p className="landing-tagline landing-tagline--below-topbar">
+            УМНЫЙ АССОРТИМЕНТ
+          </p>
+        </div>
       </div>
 
-      <header className="landing-header">
-        <img
-          className="landing-logo"
-          src={logoSrc}
-          alt="MiniLik"
-          width={280}
-          height={72}
-        />
-        <p className="landing-tagline">УМНЫЙ АССОРТИМЕНТ</p>
-        <p className="landing-lead">
-          Выберите блок — откроется кабинет с ИИ-конвейером на нужном этапе.
-        </p>
-      </header>
+      <div className="landing-hero-stack">
+        <header className="landing-header">
+          <img
+            className="landing-logo"
+            src={logoSrc}
+            alt="MiniLik"
+            width={280}
+            height={72}
+          />
+          <p className="landing-lead">
+            Выберите блок — откроется кабинет с ИИ-конвейером на нужном этапе.
+          </p>
+        </header>
+      </div>
 
       <div className="landing-grid">
         {TILES.map((t) => (

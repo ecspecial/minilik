@@ -20,6 +20,7 @@ import {
   IsString,
 } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { AnalysisPatchDto } from './dto/analysis-patch.dto';
 import type { IntakeContext } from './sessions.types';
 import { SessionsService } from './sessions.service';
 
@@ -113,6 +114,15 @@ export class SessionsController {
     return this.sessions.runAnalysis(id);
   }
 
+  /** Правки карточки изделия до подтверждения (и после — только текстовые поля UI). */
+  @Patch(':id/analysis')
+  patchAnalysis(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: AnalysisPatchDto,
+  ) {
+    return this.sessions.patchAnalysis(id, body);
+  }
+
   @Post(':id/analysis-decision')
   decision(
     @Param('id', ParseUUIDPipe) id: string,
@@ -164,6 +174,18 @@ export class SessionsController {
   @Post(':id/tools/pattern-render')
   patternRender(@Param('id', ParseUUIDPipe) id: string) {
     return this.sessions.runPatternRender(id);
+  }
+
+  /** Конструктор → изображение схемы лекал (image API). */
+  @Post(':id/tools/pattern-layout-image')
+  patternLayoutImage(@Param('id', ParseUUIDPipe) id: string) {
+    return this.sessions.runPatternLayoutImage(id);
+  }
+
+  /** Конструктор этап 2 (точные лекала), после шага 1. */
+  @Post(':id/constructor-stage-2')
+  constructorStage2(@Param('id', ParseUUIDPipe) id: string) {
+    return this.sessions.runConstructorStage2(id);
   }
 
   /** §13 рыночные ориентиры (ответ без сохранения в сессию). */
