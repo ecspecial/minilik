@@ -47,6 +47,46 @@ export class SessionsPersistenceService implements OnModuleInit {
     return path.join(this.dir, `${id}.json`);
   }
 
+  /** Каталог бинарных снимков сессии: `{dataDir}/images/{sessionId}/{0,1,2}`. */
+  sessionImagesDir(sessionId: string): string {
+    return path.join(this.dir, 'images', sessionId);
+  }
+
+  async clearSessionImages(sessionId: string): Promise<void> {
+    const dir = this.sessionImagesDir(sessionId);
+    try {
+      const names = await fs.readdir(dir);
+      await Promise.all(
+        names.map((n) => fs.unlink(path.join(dir, n)).catch(() => undefined)),
+      );
+    } catch {
+      /* каталога ещё нет */
+    }
+  }
+
+  async writeSessionImage(
+    sessionId: string,
+    index: number,
+    buffer: Buffer,
+    _mime: string,
+  ): Promise<void> {
+    const dir = this.sessionImagesDir(sessionId);
+    mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, `${index}`);
+    const tmp = `${filePath}.tmp`;
+    await fs.writeFile(tmp, buffer);
+    await fs.rename(tmp, filePath);
+  }
+
+  async readSessionImage(sessionId: string, index: number): Promise<Buffer | null> {
+    const filePath = path.join(this.sessionImagesDir(sessionId), `${index}`);
+    try {
+      return await fs.readFile(filePath);
+    } catch {
+      return null;
+    }
+  }
+
   async save(state: SessionState): Promise<void> {
     const p = this.filePath(state.id);
     const tmp = `${p}.tmp`;

@@ -7,7 +7,13 @@ import type { EconomyLine } from '../economy/economy-calculator';
 
 export type SessionImage = {
   mimeType: string;
-  dataUrl: string;
+  /**
+   * Путь для загрузки через API (axios baseURL `/api`), например `/sessions/<id>/images/0`.
+   * Файл хранится на диске; в JSON сессии нет base64.
+   */
+  url?: string;
+  /** Устар.: встраиваемое фото (старые сессии). Новые загрузки пишут только url + mimeType. */
+  dataUrl?: string;
 };
 
 /** Результат цепочки; поля по мере шагов 1–8 (8 — финальный пакет). */

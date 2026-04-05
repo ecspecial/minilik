@@ -1,11 +1,18 @@
 import axios from 'axios';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { AssistantTextPanel } from '../components/ModuleChatPanel';
 import { PRODUCT_TYPES } from '../constants/productTypes';
 import { ThemeToggle } from '../ThemeToggle';
 import { ANCHOR_STORAGE_KEY } from '../workspaceSections';
-import {
+import api, {
   analyze,
   analysisDecision,
   createSession,
@@ -29,7 +36,7 @@ type Analysis = Record<string, unknown>;
 
 type SessionPayload = {
   id: string;
-  images: { mimeType: string; dataUrl: string }[];
+  images: { mimeType: string; url?: string; dataUrl?: string }[];
   analysis: Analysis | null;
   analysisReport?: string | null;
   analysisApproved: boolean | null;
@@ -301,6 +308,56 @@ export default function WorkspacePage() {
     };
   }, [files]);
 
+  /** Превью уже загруженных на сервер фото (blob URL или legacy data URL). */
+  const [sessionImagePreviewUrls, setSessionImagePreviewUrls] = useState<
+    string[]
+  >([]);
+  const sessionImageBlobsRef = useRef<string[]>([]);
+
+  useEffect(() => {
+    sessionImageBlobsRef.current.forEach((u) => URL.revokeObjectURL(u));
+    sessionImageBlobsRef.current = [];
+    const images = session?.images;
+    if (!images?.length) {
+      setSessionImagePreviewUrls([]);
+      return;
+    }
+    let cancelled = false;
+
+    void (async () => {
+      const next: string[] = [];
+      for (const im of images) {
+        if (cancelled) return;
+        if (im.dataUrl) {
+          next.push(im.dataUrl);
+          continue;
+        }
+        if (im.url) {
+          try {
+            const { data } = await api.get<Blob>(im.url, {
+              responseType: 'blob',
+            });
+            if (cancelled) return;
+            const blobUrl = URL.createObjectURL(data);
+            sessionImageBlobsRef.current.push(blobUrl);
+            next.push(blobUrl);
+          } catch {
+            if (!cancelled) next.push('');
+          }
+          continue;
+        }
+        if (!cancelled) next.push('');
+      }
+      if (!cancelled) setSessionImagePreviewUrls(next);
+    })();
+
+    return () => {
+      cancelled = true;
+      sessionImageBlobsRef.current.forEach((u) => URL.revokeObjectURL(u));
+      sessionImageBlobsRef.current = [];
+    };
+  }, [session?.images]);
+
   function removeFileAt(index: number) {
     setFiles((prev) => prev.filter((_, i) => i !== index));
   }
@@ -553,7 +610,15 @@ export default function WorkspacePage() {
 
   function exportCurrentSessionJson() {
     if (!session) return;
-    const blob = new Blob([JSON.stringify(session, null, 2)], {
+    const forExport = {
+      ...session,
+      images: session.images.map((im) =>
+        im.url
+          ? { mimeType: im.mimeType, url: im.url }
+          : { mimeType: im.mimeType, dataUrl: im.dataUrl },
+      ),
+    };
+    const blob = new Blob([JSON.stringify(forExport, null, 2)], {
       type: 'application/json',
     });
     const a = document.createElement('a');
@@ -933,6 +998,41 @@ export default function WorkspacePage() {
               {busy === 'upload' ? 'Отправка…' : 'Загрузить фото'}
             </button>
           </div>
+          {session && session.images.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <p className="muted" style={{ marginBottom: 8 }}>
+                Загружено в сессию: <strong>{session.images.length}</strong>{' '}
+                — картинки хранятся как файлы на сервере, в JSON только ссылки.
+              </p>
+              <ul
+                className="file-preview-strip"
+                aria-label="Фото в текущей сессии"
+              >
+                {session.images.map((_, index) => (
+                  <li
+                    key={`sess-img-${session.id}-${index}`}
+                    className="file-preview-card"
+                  >
+                    {sessionImagePreviewUrls[index] ? (
+                      <img
+                        src={sessionImagePreviewUrls[index]}
+                        alt={`Фото ${index + 1}`}
+                        className="file-preview-img"
+                      />
+                    ) : (
+                      <div
+                        className="file-preview-placeholder"
+                        aria-hidden
+                      />
+                    )}
+                    <span className="file-preview-name" title="">
+                      #{index + 1}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {files.length > 0 && !sessionId && (
             <p className="muted" style={{ marginTop: 8 }}>
               Подождите пару секунд, пока система подготовится, или обновите

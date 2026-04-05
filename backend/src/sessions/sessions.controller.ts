@@ -8,10 +8,12 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Res,
   UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import {
   IsBoolean,
@@ -90,6 +92,25 @@ export class SessionsController {
   @Get()
   list() {
     return { sessions: this.sessions.listSummaries() };
+  }
+
+  /** Загрузка бинарного превью (JWT в заголовке; для фронта через axios blob URL). */
+  @Get(':id/images/:index')
+  async getSessionImage(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('index', ParseIntPipe) index: number,
+    @Res() res: Response,
+  ) {
+    if (index < 0) {
+      throw new BadRequestException('index не может быть отрицательным');
+    }
+    const { buffer, mimeType } = await this.sessions.getSessionImageBytes(
+      id,
+      index,
+    );
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Cache-Control', 'private, max-age=86400');
+    res.send(buffer);
   }
 
   @Get(':id')

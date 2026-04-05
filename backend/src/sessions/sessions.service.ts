@@ -27,10 +27,37 @@ import { SessionsPersistenceService } from './sessions-persistence.service';
 const CHANNELS: SalesChannel[] = ['wb', 'ozon', 'site'];
 const SCENARIOS: Scenario[] = ['pessimistic', 'base', 'optimistic'];
 
-function toDataUrl(file: Express.Multer.File): { mimeType: string; dataUrl: string } {
-  const mime = file.mimetype || 'image/jpeg';
-  const b64 = file.buffer.toString('base64');
-  return { mimeType: mime, dataUrl: `data:${mime};base64,${b64}` };
+function bufferToDataUrl(mime: string, buf: Buffer): string {
+  const m = mime || 'image/jpeg';
+  return `data:${m};base64,${buf.toString('base64')}`;
+}
+
+/**
+ * Данные для vision API: либо legacy dataUrl, либо чтение файла с диска (без хранения base64 в JSON).
+ */
+async function visionDataUrlsFromSession(
+  sessionId: string,
+  images: SessionState['images'],
+  persistence: SessionsPersistenceService,
+): Promise<string[]> {
+  const out: string[] = [];
+  for (let i = 0; i < images.length; i++) {
+    const im = images[i];
+    if (im.dataUrl) {
+      out.push(im.dataUrl);
+      continue;
+    }
+    if (im.url) {
+      const buf = await persistence.readSessionImage(sessionId, i);
+      if (!buf) {
+        throw new BadRequestException(`Файл фото ${i} не найден на сервере`);
+      }
+      out.push(bufferToDataUrl(im.mimeType, buf));
+      continue;
+    }
+    throw new BadRequestException('Сессия содержит изображение без url и без dataUrl');
+  }
+  return out;
 }
 
 function num(v: unknown, fallback: number): number {
@@ -277,7 +304,7 @@ export class SessionsService implements OnModuleInit {
     this.log.log(`из файлов загружено сессий: ${loaded.length}`);
   }
 
-  /** Запись полной сессии в JSON (включая фото data URL и ссылки на сгенерированные изображения). */
+  /** Запись полной сессии в JSON (фото — ссылки url + файлы в images/, legacy — dataUrl). */
   private scheduleSave(s: SessionState): void {
     s.updatedAt = new Date().toISOString();
     void this.persistence.save(s).catch((e) =>
@@ -335,6 +362,35 @@ export class SessionsService implements OnModuleInit {
     return s;
   }
 
+  /** Байты превью для GET /sessions/:id/images/:index (файл на диске или legacy dataUrl). */
+  async getSessionImageBytes(
+    id: string,
+    index: number,
+  ): Promise<{ buffer: Buffer; mimeType: string }> {
+    const s = this.get(id);
+    if (!Number.isInteger(index) || index < 0 || index >= s.images.length) {
+      throw new NotFoundException('Изображение не найдено');
+    }
+    const meta = s.images[index];
+    if (meta.url) {
+      const buf = await this.persistence.readSessionImage(id, index);
+      if (!buf) throw new NotFoundException('Файл изображения отсутствует');
+      return {
+        buffer: buf,
+        mimeType: meta.mimeType || 'image/jpeg',
+      };
+    }
+    if (meta.dataUrl) {
+      const m = /^data:([^;,]+);base64,(.+)$/.exec(meta.dataUrl);
+      if (!m) throw new NotFoundException('Повреждённое изображение в сессии');
+      return {
+        buffer: Buffer.from(m[2], 'base64'),
+        mimeType: m[1],
+      };
+    }
+    throw new NotFoundException('Изображение не найдено');
+  }
+
   setIntakeContext(id: string, ctx: IntakeContext): SessionState {
     const s = this.get(id);
     s.intakeContext = { ...s.intakeContext, ...ctx };
@@ -343,7 +399,7 @@ export class SessionsService implements OnModuleInit {
     return s;
   }
 
-  attachImages(id: string, files: Express.Multer.File[]) {
+  async attachImages(id: string, files: Express.Multer.File[]) {
     const s = this.get(id);
     if (!files?.length) {
       throw new BadRequestException('Загрузите хотя бы одно изображение');
@@ -355,10 +411,17 @@ export class SessionsService implements OnModuleInit {
     this.log.log(
       `[${id}] загрузка изображений: count=${files.length}, bytes=${sizes.join(', ')}`,
     );
-    s.images = files.map((f) => {
-      const { mimeType, dataUrl } = toDataUrl(f);
-      return { mimeType, dataUrl };
-    });
+    await this.persistence.clearSessionImages(id);
+    s.images = [];
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      const mimeType = f.mimetype || 'image/jpeg';
+      await this.persistence.writeSessionImage(id, i, f.buffer, mimeType);
+      s.images.push({
+        mimeType,
+        url: `/sessions/${id}/images/${i}`,
+      });
+    }
     s.analysis = null;
     s.analysisReport = null;
     s.analysisApproved = null;
@@ -373,7 +436,7 @@ export class SessionsService implements OnModuleInit {
     if (!s.images.length) {
       throw new BadRequestException('Сначала загрузите изображения');
     }
-    const urls = s.images.map((i) => i.dataUrl);
+    const urls = await visionDataUrlsFromSession(id, s.images, this.persistence);
     this.log.log(
       `[${id}] анализ изделия: старт (фото=${urls.length}), смотрите логи AI_TIMING`,
     );
