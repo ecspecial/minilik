@@ -1,22 +1,45 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { mkdirSync } from 'fs';
 import { promises as fs } from 'fs';
+import { tmpdir } from 'os';
 import * as path from 'path';
 import type { SessionState } from './sessions.types';
+
+function resolveWritableSessionsDir(
+  preferred: string,
+  log: Logger,
+): string {
+  try {
+    mkdirSync(preferred, { recursive: true });
+    return preferred;
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code === 'EACCES' || err.code === 'EROFS') {
+      const fallback = path.join(tmpdir(), 'minilik-sessions');
+      log.warn(
+        `Нет права записи в ${preferred} (${err.code}). Используется ${fallback}. Для постоянных сессий задайте SESSIONS_DATA_DIR на смонтированный том или обновите образ (mkdir /app/data в Dockerfile).`,
+      );
+      mkdirSync(fallback, { recursive: true });
+      return fallback;
+    }
+    throw e;
+  }
+}
 
 @Injectable()
 export class SessionsPersistenceService implements OnModuleInit {
   private readonly log = new Logger(SessionsPersistenceService.name);
-  private readonly dir: string;
+  readonly dir: string;
 
   constructor(private readonly config: ConfigService) {
-    this.dir =
+    const preferred =
       this.config.get<string>('SESSIONS_DATA_DIR')?.trim() ||
       path.join(process.cwd(), 'data', 'sessions');
+    this.dir = resolveWritableSessionsDir(preferred, this.log);
   }
 
   async onModuleInit(): Promise<void> {
-    await fs.mkdir(this.dir, { recursive: true });
     this.log.log(`каталог сессий: ${this.dir}`);
   }
 

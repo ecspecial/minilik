@@ -25,6 +25,9 @@ services:
     # Отладка на хосте: сравните с трафиком через 8080. curl 127.0.0.1:13000/api/...
     ports:
       - "127.0.0.1:13000:3000"
+    volumes:
+      # Хост ↔ контейнер: сессии JSON переживают пересоздание контейнера (права: uid 1001 = nestjs в образе).
+      - /var/minilik/sessions:/var/minilik/sessions
     networks:
       - minilik
 
