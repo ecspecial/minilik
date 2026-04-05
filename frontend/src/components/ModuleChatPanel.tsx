@@ -1,4 +1,40 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { Fragment, useMemo, useState, type ReactNode } from 'react';
+
+/** Нумерованные строки («1. …») — заголовки секций; пустая строка разделяет абзацы-блоки. */
+function segmentAssistantText(text: string): (
+  | { kind: 'heading'; text: string }
+  | { kind: 'body'; lines: string[] }
+)[] {
+  const rawLines = text.split('\n');
+  const segments: (
+    | { kind: 'heading'; text: string }
+    | { kind: 'body'; lines: string[] }
+  )[] = [];
+  let bodyBuf: string[] = [];
+
+  const flushBody = () => {
+    if (bodyBuf.length) {
+      segments.push({ kind: 'body', lines: [...bodyBuf] });
+      bodyBuf = [];
+    }
+  };
+
+  for (const line of rawLines) {
+    if (!line.trim()) {
+      flushBody();
+      continue;
+    }
+    const t = line.trim();
+    if (/^\d+\.\s+\S/.test(t)) {
+      flushBody();
+      segments.push({ kind: 'heading', text: t });
+    } else {
+      bodyBuf.push(line);
+    }
+  }
+  flushBody();
+  return segments;
+}
 
 function humanizeKey(key: string): string {
   return key
@@ -152,6 +188,8 @@ function AssistantTextBubble({
   text: string;
   scrollable?: boolean;
 }) {
+  const segments = useMemo(() => segmentAssistantText(text), [text]);
+
   return (
     <div className="chat-thread chat-thread--embedded">
       <div className="chat-msg chat-msg--assistant">
@@ -163,11 +201,30 @@ function AssistantTextBubble({
           <div
             className={`chat-msg-bubble chat-msg-bubble--text${scrollable ? ' chat-msg-bubble--scroll' : ''}`}
           >
-            {text.split('\n').map((line, i) => (
-              <p key={i} className="chat-paragraph">
-                {line}
-              </p>
-            ))}
+            <div className="chat-formatted">
+              {segments.map((seg, i) => {
+                if (seg.kind === 'heading') {
+                  return (
+                    <p
+                      key={`h-${i}`}
+                      className="chat-paragraph chat-paragraph--section-heading"
+                    >
+                      {seg.text}
+                    </p>
+                  );
+                }
+                return (
+                  <div key={`b-${i}`} className="chat-body-block">
+                    {seg.lines.map((line, j) => (
+                      <Fragment key={j}>
+                        {j > 0 ? <br /> : null}
+                        {line}
+                      </Fragment>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       </div>

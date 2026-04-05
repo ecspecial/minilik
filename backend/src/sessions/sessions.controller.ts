@@ -176,10 +176,22 @@ export class SessionsController {
     return this.sessions.runPatternRender(id);
   }
 
-  /** Конструктор → изображение схемы лекал (image API). */
+  /** Конструктор → изображение лекал (выкройки), не техрисунок изделия. */
   @Post(':id/tools/pattern-layout-image')
   patternLayoutImage(@Param('id', ParseUUIDPipe) id: string) {
     return this.sessions.runPatternLayoutImage(id);
+  }
+
+  /** Технический рисунок изделия (вид спереди/сзади), отдельно от лекал. */
+  @Post(':id/tools/technical-flat-image')
+  technicalFlatImage(@Param('id', ParseUUIDPipe) id: string) {
+    return this.sessions.runTechnicalFlatImage(id);
+  }
+
+  /** Студийный lookbook на модели по карточке изделия (image API; тип модели из описания). */
+  @Post(':id/tools/kid-studio-image')
+  kidStudioImage(@Param('id', ParseUUIDPipe) id: string) {
+    return this.sessions.runKidStudioImage(id);
   }
 
   /** Конструктор этап 2 (точные лекала), после шага 1. */

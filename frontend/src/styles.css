@@ -1313,6 +1313,41 @@ html[data-theme='dark'] .chat-msg-bubble {
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
 }
 
+.chat-formatted {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.chat-paragraph--section-heading {
+  margin: 0.75rem 0 0.2rem;
+  padding: 0.4rem 0 0.45rem 0.75rem;
+  font-weight: 700;
+  font-size: 0.92rem;
+  line-height: 1.35;
+  color: var(--text);
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border-radius: 0 8px 8px 0;
+}
+
+.chat-formatted > .chat-paragraph--section-heading:first-child {
+  margin-top: 0;
+}
+
+.chat-body-block {
+  margin: 0;
+  padding: 0.7rem 0.9rem;
+  background: color-mix(in srgb, var(--bg-panel) 92%, var(--bg-elevated));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 0.88rem;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .chat-msg-bubble--text .chat-paragraph {
   margin: 0 0 0.5rem;
 }
@@ -1408,6 +1443,26 @@ html[data-theme='dark'] .chat-msg-bubble {
   max-height: min(52vh, 26rem);
   overflow-y: auto;
   overscroll-behavior: contain;
+  padding-right: 0.5rem;
+  scrollbar-gutter: stable;
+}
+
+.chat-msg-bubble--scroll .chat-formatted {
+  padding-bottom: 0.15rem;
+}
+
+/* Тот же визуальный «блок в рамке», что у ответа в скролле — для полей редактирования длинного текста */
+textarea.pre.chat-msg-bubble--scroll {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  background: color-mix(in srgb, var(--bg-panel) 92%, var(--bg-elevated));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.7rem 0.9rem;
+  color: var(--text);
+  resize: vertical;
+  scrollbar-gutter: stable;
 }
 
 .app-shell--with-sticky-cta .layout {

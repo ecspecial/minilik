@@ -14,7 +14,9 @@ import {
   patchAnalysis,
   patchIntakeContext,
   runConstructorStage2,
+  runKidStudioImageTool,
   runPatternLayoutImageTool,
+  runTechnicalFlatImageTool,
   runPipeline,
   runPipelineStep,
   setAuthToken,
@@ -102,6 +104,18 @@ function hasPrecisePatterns(
   pipeline: Record<string, unknown> | null | undefined,
 ): boolean {
   return pipelineStr(pipeline, 'constructorStage2').trim().length > 0;
+}
+
+/** Текст для подписей к лекалам (новое поле или совместимость со старым). */
+function lekalaSheetFromPipeline(
+  pipeline: Record<string, unknown> | null | undefined,
+): string {
+  if (!pipeline) return '';
+  const a = pipeline.lekalaLayoutSheetText;
+  const b = pipeline.patternTechPackSheetText;
+  if (typeof a === 'string' && a.trim()) return a;
+  if (typeof b === 'string' && b.trim()) return b;
+  return '';
 }
 
 /** Если нет полного текста intake — собираем из полей карточки */
@@ -327,7 +341,39 @@ export default function WorkspacePage() {
       await refresh(sessionId);
     } catch {
       setErr(
-        'Не удалось построить схему. Убедитесь, что сначала сформированы точные лекала, и повторите. Если ошибка повторяется — напишите в поддержку.',
+        'Не удалось сгенерировать лист лекал (текст выкроек, затем картинка). Нужны точные лекала; запрос может занять больше минуты.',
+      );
+    } finally {
+      setToolBusy(null);
+    }
+  }
+
+  async function onTechnicalFlatImageTool() {
+    if (!sessionId) return;
+    setErr(null);
+    setToolBusy('techFlat');
+    try {
+      await runTechnicalFlatImageTool(sessionId);
+      await refresh(sessionId);
+    } catch {
+      setErr(
+        'Не удалось построить технический рисунок. Выполните шаг 1 конструктора (текст черновика).',
+      );
+    } finally {
+      setToolBusy(null);
+    }
+  }
+
+  async function onKidStudioImageTool() {
+    if (!sessionId) return;
+    setErr(null);
+    setToolBusy('kidStudio');
+    try {
+      await runKidStudioImageTool(sessionId);
+      await refresh(sessionId);
+    } catch {
+      setErr(
+        'Не удалось сгенерировать студийный образ. Заполните карточку изделия и повторите.',
       );
     } finally {
       setToolBusy(null);
@@ -1150,14 +1196,17 @@ export default function WorkspacePage() {
             <section className="card panel">
               <div className="panel-header">
                 <span className="panel-badge">Конструктор</span>
-                <h2 style={{ margin: 0 }}>Точные лекала и схема</h2>
+                <h2 style={{ margin: 0 }}>Лекала и технический рисунок</h2>
               </div>
               <p className="panel-desc">
-                Черновик выше описывает модель в целом.{' '}
-                <strong>Точные лекала</strong> — отдельный проход: конкретные
-                размеры и формы деталей. Схема-картинка лекал строится{' '}
-                <strong>только по тексту точных лекал</strong>, чтобы на чертеже
-                были согласованные значения; без этапа 2 кнопка схемы неактивна.
+                Это <strong>разные вещи</strong>.{' '}
+                <strong>Технический рисунок</strong> — изделие спереди и сзади
+                линиями (как в паспорте модели), без деталей выкройки.{' '}
+                <strong>Лекала</strong> — отдельные плоские детали кроя для
+                раскроя (примеры раскладки деталей — отдельно от вида изделия).
+                Сначала
+                сформируйте текст <strong>точных лекал</strong>, затем при
+                необходимости сгенерируйте картинку выкроек.
               </p>
               <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
                 <button
@@ -1178,6 +1227,21 @@ export default function WorkspacePage() {
                 <button
                   type="button"
                   className="secondary"
+                  onClick={onTechnicalFlatImageTool}
+                  disabled={
+                    !sessionId ||
+                    toolBusy !== null ||
+                    busy === 'pipeline' ||
+                    !pipelineStr(pipeline, 'constructor').trim()
+                  }
+                >
+                  {toolBusy === 'techFlat'
+                    ? 'Генерация…'
+                    : 'Технический рисунок изделия'}
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
                   onClick={onPatternLayoutImageTool}
                   disabled={
                     !sessionId ||
@@ -1188,12 +1252,17 @@ export default function WorkspacePage() {
                 >
                   {toolBusy === 'patternLayout'
                     ? 'Генерация…'
-                    : 'Схема лекал (картинка)'}
+                    : 'Лекала на листе (картинка)'}
                 </button>
               </div>
+              {!pipelineStr(pipeline, 'constructor').trim() ? (
+                <p className="muted" style={{ marginTop: 10, marginBottom: 0 }}>
+                  Технический рисунок доступен после шага 1 конструктора.
+                </p>
+              ) : null}
               {!hasPrecisePatterns(pipeline) ? (
                 <p className="muted" style={{ marginTop: 10, marginBottom: 0 }}>
-                  Схема станет доступна после формирования точных лекал.
+                  Картинка лекал — после формирования точных лекал (этап 2).
                 </p>
               ) : null}
             </section>
@@ -1207,13 +1276,60 @@ export default function WorkspacePage() {
               </AssistantTextPanel>
             ) : null}
             <section
+              id="module-technical-flat"
+              className="card panel workspace-anchor"
+            >
+              <div className="panel-header">
+                <span className="panel-badge">Визуал</span>
+                <h2 style={{ margin: 0 }}>Технический рисунок изделия</h2>
+              </div>
+              <p className="panel-desc">
+                Вид спереди и сзади готового изделия линиями — без лекал и без
+                разложенных выкроек. Для производственных файлов раскроя
+                используйте блок ниже.
+              </p>
+              {typeof (pipeline as { technicalFlatImageUrl?: string | null })
+                .technicalFlatImageUrl === 'string' &&
+                String(
+                  (pipeline as { technicalFlatImageUrl: string })
+                    .technicalFlatImageUrl,
+                ).length > 0 && (
+                  <img
+                    className="gen"
+                    style={{ marginTop: 16 }}
+                    src={
+                      (pipeline as { technicalFlatImageUrl: string })
+                        .technicalFlatImageUrl
+                    }
+                    alt="Технический рисунок изделия"
+                  />
+                )}
+            </section>
+            <section
               id="module-pattern-layout"
               className="card panel workspace-anchor"
             >
               <div className="panel-header">
                 <span className="panel-badge">Визуал</span>
-                <h2 style={{ margin: 0 }}>Схема лекал (изображение)</h2>
+                <h2 style={{ margin: 0 }}>Лекала (выкройки на листе)</h2>
               </div>
+              <p className="panel-desc">
+                Только <strong>плоские детали кроя</strong>. На самой картинке —
+                в основном <strong>номера деталей 1, 2, 3…</strong> (генерация
+                плохо рисует кириллицу на чертежах). Полные русские названия и
+                размеры — в тексте ниже и в «Точные лекала».
+              </p>
+              {lekalaSheetFromPipeline(pipeline).trim().length > 0 && (
+                  <details className="analysis-meta-fold" style={{ marginTop: 12 }}>
+                    <summary>Расшифровка номеров и размеры (основной текст)</summary>
+                    <pre
+                      className="pre chat-raw-pre"
+                      style={{ maxHeight: 'min(40vh, 20rem)' }}
+                    >
+                      {lekalaSheetFromPipeline(pipeline)}
+                    </pre>
+                  </details>
+                )}
               {typeof (pipeline as { patternLayoutImageUrl?: string })
                 .patternLayoutImageUrl === 'string' &&
                 String(
@@ -1227,7 +1343,7 @@ export default function WorkspacePage() {
                       (pipeline as { patternLayoutImageUrl: string })
                         .patternLayoutImageUrl
                     }
-                    alt="Схематичное изображение лекал по конструктору"
+                    alt="Лекала — детали выкройки"
                   />
                 )}
             </section>
@@ -1326,6 +1442,45 @@ export default function WorkspacePage() {
               />
             </section>
           )}
+
+        {analysis ? (
+          <section
+            id="module-studio-lookbook"
+            className="card panel workspace-anchor"
+          >
+            <div className="panel-header">
+              <span className="panel-badge">Визуал</span>
+              <h2 style={{ margin: 0 }}>Студия: образ на модели</h2>
+            </div>
+            <p className="panel-desc">
+              Отдельная генерация по карточке и техлисту: светлая студия, модель
+              подходит типу изделия (детское или взрослое — по вашим данным),
+              несколько ракурсов на одном листе. Для каталога и презентаций; не
+              заменяет живую примерку.
+            </p>
+            <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
+              <button
+                type="button"
+                className="secondary"
+                onClick={onKidStudioImageTool}
+                disabled={!sessionId || toolBusy !== null || busy === 'pipeline'}
+              >
+                {toolBusy === 'kidStudio'
+                  ? 'Генерация…'
+                  : 'Собрать студийный образ'}
+              </button>
+            </div>
+            {typeof pipeline?.kidStudioImageUrl === 'string' &&
+              pipeline.kidStudioImageUrl.length > 0 && (
+                <img
+                  className="gen"
+                  style={{ marginTop: 16 }}
+                  src={pipeline.kidStudioImageUrl}
+                  alt="Студийный образ изделия на модели"
+                />
+              )}
+          </section>
+        ) : null}
       </div>
 
       {showStickyNext ? (

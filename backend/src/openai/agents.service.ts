@@ -29,6 +29,7 @@ import {
   PHOTO_TEXT_BODY,
   PATTERN_RENDER_TEXT_BODY,
   PROMPT_CONFIG_VERSION,
+  LEKALA_LAYOUT_TEXT_BODY,
   TECHNOLOGIST_TEXT_BODY,
   withNewUpdate,
 } from './prompts/new-update-text';
@@ -141,6 +142,48 @@ export class AgentsService {
         text: `master:\n${JSON.stringify(masterJson, null, 2)}\n\nКонструктор (текст этапов 1–2):\n${constructorContext}`,
       },
     ]);
+  }
+
+  /** Текст только по лекалам (выкройки) — не техрисунок изделия; подписи для image API. */
+  async runLekalaLayoutSheetText(
+    masterJson: Record<string, unknown>,
+    stage1: string,
+    stage2: string,
+  ): Promise<string> {
+    const system = withNewUpdate(LEKALA_LAYOUT_TEXT_BODY);
+    const text = await this.chatText('runLekalaLayoutSheet', system, [
+      {
+        type: 'text',
+        text: `master:\n${JSON.stringify(masterJson, null, 2)}\n\nЭтап 1:\n${stage1.slice(0, 12000)}\n\nЭтап 2:\n${stage2.slice(0, 14000)}`,
+      },
+    ]);
+    return text.trim();
+  }
+
+  /** Технический рисунок изделия: вид спереди и сзади линиями, без лекал. */
+  async generateTechnicalFlatSketchImage(garmentConstructionText: string): Promise<string | null> {
+    const spec = garmentConstructionText.slice(0, 10000);
+    const prompt = `Children's apparel TECHNICAL FLAT SKETCH only (fashion industry standard).
+
+Draw the FINISHED GARMENT as clean black line art on white background:
+- Front view and back view of the same garment (side by side or stacked).
+- Show silhouette, seams, pockets, closures, collar or waistband as construction lines.
+- No shading, no fabric texture, no photo, no child model, no mannequin.
+
+STRICTLY FORBIDDEN — do NOT draw:
+- Flat pattern pieces / sewing pattern templates / lekala shapes laid out for cutting
+- Separate sleeve or body panels as for a cutter — those belong on a different document
+- Any text, letters, labels, or dimensions on the drawing (line art only)
+
+Follow this construction description for proportions and design:
+${spec}`;
+
+    return this.generateOpenAiImage(prompt, {
+      operation: 'images.generate.technicalFlat',
+      styleSuffix:
+        'Pure technical flat sketch, CAD-like clean strokes, white background, no typography.',
+      size: '1024x1536',
+    });
   }
 
   async runPurchasingText(
@@ -294,43 +337,90 @@ export class AgentsService {
   }
 
   /**
-   * Схематичное изображение лекал. Для совпадения чисел на чертеже с моделью передавайте текст точных лекал и usePreciseStage2: true.
+   * Лист ЛЕКАЛ: только плоские детали выкройки для раскроя. Технический рисунок изделия — отдельный вызов (generateTechnicalFlatSketchImage).
    */
   async generatePatternLayoutImage(
     constructorContext: unknown,
-    opts?: { usePreciseStage2?: boolean },
+    opts?: {
+      usePreciseStage2?: boolean;
+      /** Подписи только по деталям кроя — runLekalaLayoutSheetText */
+      techPackSheetText?: string;
+    },
   ): Promise<string | null> {
     const ctx =
       constructorContext !== null && typeof constructorContext === 'object'
         ? JSON.stringify(constructorContext, null, 2)
         : String(constructorContext ?? '');
-    const trimmed = ctx.length > 16000 ? `${ctx.slice(0, 16000)}\n…` : ctx;
-    const precise = opts?.usePreciseStage2 === true;
-    const prompt = precise
-      ? `КРИТИЧНО: ниже — ТЕХЛИСТ ТОЧНЫХ ЛЕКАЛ (этап 2): конкретные размеры в см, формы деталей, проймы, оката и т.д.
-Сгенерируй технический чертёж выкроек, который максимально СООТВЕТСТВУЕТ этим числам и описанию деталей (перед, спинка, рукав и др.). Не выдумывай другие пропорции.
+    const geo = ctx.length > 12000 ? `${ctx.slice(0, 12000)}\n…` : ctx;
+    const sheet = (opts?.techPackSheetText ?? '').trim().slice(0, 14000);
 
-Данные этапа 2 (используй как единственный источник истины для геометрии):
-${trimmed}
+    const lekalaDrawingInstructions = `Classic industrial LEKALA / sewing pattern TECHNICAL DRAWING (one sheet, portrait, white background).
 
-Визуал: вид сверху / разложенные детали, тонкие чёткие линии, светлый фон, без фото модели и без фактуры ткани, только схема лекал. Минимум подписей. Без логотипов.`
-      : `Задача: по конструкторскому техлисту (этапы 1 и при наличии 2) построй визуализацию лекал.
+WHAT TO DRAW:
+- Only flat PATTERN PIECES (2D cutting outlines): seam lines, darts, notches, drilling holes if any.
+- Optional grain line: single dashed directional arrow — NO text on the arrow.
+- Lay out pieces like a marker / CAD print — clear spacing.
 
-Исходные данные конструктора:
-${trimmed}
+DIMENSIONING — like a real pattern blueprint:
+- Use dimension lines with arrowheads (extension lines from piece edges), place ONLY the numeric value between or beside the arrows (Arabic numerals, decimal point OK).
+- NO words, NO Cyrillic, NO Latin labels, NO "cm"/"mm", NO piece names, NO title, NO tables — ONLY digits in dimension strings.
+- Every important edge length from the schedule below should get a plausible dimension where it fits the geometry.
 
-Сгенерируй изображение лекал: технический чертёж выкроек, вид сверху или детали на плоскости, чёткие контуры, светлый фон, без фотовизуала и фактуры ткани — схема lekala. Подписи минимальны. Без логотипов.`;
+STRICTLY FORBIDDEN:
+- Finished-garment technical flat (front/back fashion sketch of the product on a figure)
+- Human, mannequin, photo
+- Any typography except lone numbers in dimension chains
+- Number-in-circle piece callouts (1, 2, 3 bubbles) — user asked for arrow dimensions only, not part numbers
 
-    return this.generateOpenAiImage(prompt, {
+DIMENSION SCHEDULE & CONTEXT (use numbers for arrows; Russian lines explain placement — never draw that text on the image):
+${sheet.length > 0 ? sheet : '(infer key lengths from geometry only)'}
+
+GEOMETRY:
+${geo}
+---`;
+
+    return this.generateOpenAiImage(lekalaDrawingInstructions, {
       operation: 'images.generate.patternLayout',
       styleSuffix:
-        'Technical sewing pattern line art only, high contrast, flat diagram, no photorealistic person, no runway photo.',
+        'Technical lekala blueprint: dimension arrows with numeric values only, no words, no Cyrillic, no garment product flat, vector-sharp lines.',
+      size: '1024x1536',
+    });
+  }
+
+  /** Студийный lookbook: образ изделия на модели; тип модели выводить из описания (детский / взрослый и т.д.). */
+  async generateStudioLookbookImage(garmentDescription: string): Promise<string | null> {
+    const g = garmentDescription.slice(0, 6000);
+    const prompt = `Professional fashion e-commerce studio photoshoot (catalog / lookbook).
+
+MODEL — MUST MATCH THE PRODUCT:
+Infer one appropriate model from the garment description below (do not default to a child).
+- Children's / baby / школьный возраст / детские размеры / рост 98–170 в детском контексте → child or teen model matching that band; natural proportions, neutral expression.
+- Women's / men's / adult / missus / unisex adult / размеры взрослого ряда → adult model; match implied gender presentation and build to the silhouette and sizing hints.
+- If unclear: use a neutral adult catalog model that fits the garment type.
+
+Outfit: exactly this garment — ${g}
+
+Setting: white or light gray cyclorama, soft even studio lighting (softbox), no harsh shadows.
+Layout: single image with a neat grid or trio of views — full body front, full body back or three-quarter, plus one detail of interesting construction — like a lookbook sheet.
+Photorealistic, sharp focus, fabric texture visible, catalog quality, no text, no logo, no watermark, no price tag.
+
+Safety: modest commercial apparel only, fully clothed, studio context. For minors: conservative, family-friendly retail styling — no sexualization.`;
+
+    return this.generateOpenAiImage(prompt, {
+      operation: 'images.generate.studioLookbook',
+      styleSuffix:
+        'Premium fashion catalog photography, realistic, model matches garment category, no typography in frame.',
+      size: '1024x1536',
     });
   }
 
   private async generateOpenAiImage(
     prompt: string,
-    opts: { operation: string; styleSuffix: string },
+    opts: {
+      operation: string;
+      styleSuffix: string;
+      size?: '1024x1024' | '1024x1536' | '1536x1024' | 'auto';
+    },
   ): Promise<string | null> {
     const model = this.config.get<string>('OPENAI_IMAGE_MODEL');
     if (!model) {
@@ -340,15 +430,16 @@ ${trimmed}
       return null;
     }
     const promptLen = prompt.length;
+    const size = opts.size ?? '1024x1024';
     return withTiming(
       opts.operation,
-      { model, promptChars: promptLen },
+      { model, promptChars: promptLen, size },
       async () => {
         try {
           const img = await this.client.images.generate({
             model,
             prompt: `${prompt}\n\n${opts.styleSuffix}`,
-            size: '1024x1024',
+            size,
             n: 1,
           });
           const first = img.data?.[0];

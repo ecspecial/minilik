@@ -208,8 +208,18 @@ function buildFinalPackageText(
   );
   blocks.push(
     pipeline.patternLayoutImageUrl
-      ? `Схема лекал: ${String(pipeline.patternLayoutImageUrl).slice(0, 200)}`
-      : 'Схема лекал: нет',
+      ? `Лекала (картинка): ${String(pipeline.patternLayoutImageUrl).slice(0, 200)}`
+      : 'Лекала (картинка): нет',
+  );
+  blocks.push(
+    pipeline.technicalFlatImageUrl
+      ? `Технический рисунок: ${String(pipeline.technicalFlatImageUrl).slice(0, 200)}`
+      : 'Технический рисунок: нет',
+  );
+  blocks.push(
+    pipeline.kidStudioImageUrl
+      ? `Студия (lookbook): ${String(pipeline.kidStudioImageUrl).slice(0, 200)}`
+      : 'Студия (lookbook): нет',
   );
   blocks.push('');
   blocks.push('=== Примечание ===');
@@ -754,13 +764,82 @@ export class SessionsService {
       throw new BadRequestException('Нужен черновой конструктор (шаг 1 цепочки)');
     }
     const t0 = performance.now();
+    const sheet = await this.agents.runLekalaLayoutSheetText(
+      s.analysis!,
+      stage1.trim(),
+      stage2.trim(),
+    );
+    if (!s.pipeline) s.pipeline = {};
+    s.pipeline.lekalaLayoutSheetText = sheet;
+    s.pipeline.patternTechPackSheetText = sheet;
     const url = await this.agents.generatePatternLayoutImage(stage2.trim(), {
       usePreciseStage2: true,
+      techPackSheetText: sheet,
     });
-    if (!s.pipeline) s.pipeline = {};
     s.pipeline.patternLayoutImageUrl = url;
     this.log.log(
       `[${id}] pattern layout image: ${url ? 'ok' : 'пусто'} за ${Math.round(performance.now() - t0)}ms`,
+    );
+    return s;
+  }
+
+  /** Технический рисунок изделия (спереди/сзади) — отдельно от лекал. */
+  async runTechnicalFlatImage(id: string): Promise<SessionState> {
+    const s = this.get(id);
+    const ctx = s.pipeline ? getConstructorContext(s.pipeline) : '';
+    if (!ctx.trim()) {
+      throw new BadRequestException(
+        'Нужен конструктор (этап 1 или 1+2), чтобы построить технический рисунок',
+      );
+    }
+    const t0 = performance.now();
+    const url = await this.agents.generateTechnicalFlatSketchImage(ctx);
+    if (!s.pipeline) s.pipeline = {};
+    s.pipeline.technicalFlatImageUrl = url;
+    this.log.log(
+      `[${id}] technical flat image: ${url ? 'ok' : 'пусто'} за ${Math.round(performance.now() - t0)}ms`,
+    );
+    return s;
+  }
+
+  /** Студийный lookbook на модели (детской или взрослой — по карточке изделия). */
+  async runKidStudioImage(id: string): Promise<SessionState> {
+    const s = this.get(id);
+    if (!s.analysis) {
+      throw new BadRequestException('Нужен анализ изделия');
+    }
+    const a = s.analysis;
+    const bits: string[] = [];
+    for (const k of [
+      'productType',
+      'season',
+      'silhouette',
+      'details',
+      'materials',
+    ] as const) {
+      const v = a[k];
+      if (v != null && String(v).trim()) bits.push(String(v));
+    }
+    if (s.analysisReport?.trim()) {
+      bits.push(s.analysisReport.trim().slice(0, 1500));
+    }
+    const c =
+      typeof s.pipeline?.constructor === 'string'
+        ? s.pipeline.constructor.slice(0, 2500)
+        : '';
+    if (c.trim()) bits.push(`Техлист: ${c.trim()}`);
+    const garmentDescription = bits.join('. ');
+    if (!garmentDescription.trim()) {
+      throw new BadRequestException('Недостаточно данных для описания образа');
+    }
+    const t0 = performance.now();
+    const url = await this.agents.generateStudioLookbookImage(
+      garmentDescription,
+    );
+    if (!s.pipeline) s.pipeline = {};
+    s.pipeline.kidStudioImageUrl = url;
+    this.log.log(
+      `[${id}] kid studio image: ${url ? 'ok' : 'пусто'} за ${Math.round(performance.now() - t0)}ms`,
     );
     return s;
   }
@@ -771,10 +850,23 @@ export class SessionsService {
     const id = s.id;
     try {
       const t0 = performance.now();
+      const stage1 = typeof s.pipeline?.constructor === 'string' ? s.pipeline.constructor : '';
+      if (!stage1.trim() || !s.analysis) {
+        this.log.warn(`[${id}] полный прогон: техкарта пропущена — нет этапа 1 или анализа`);
+        return;
+      }
+      const sheet = await this.agents.runLekalaLayoutSheetText(
+        s.analysis,
+        stage1.trim(),
+        stage2.trim(),
+      );
+      if (!s.pipeline) s.pipeline = {};
+      s.pipeline.lekalaLayoutSheetText = sheet;
+      s.pipeline.patternTechPackSheetText = sheet;
       const url = await this.agents.generatePatternLayoutImage(stage2.trim(), {
         usePreciseStage2: true,
+        techPackSheetText: sheet,
       });
-      if (!s.pipeline) s.pipeline = {};
       s.pipeline.patternLayoutImageUrl = url;
       this.log.log(
         `[${id}] full pipeline: схема лекал за ${Math.round(performance.now() - t0)}ms`,

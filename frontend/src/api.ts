@@ -139,6 +139,22 @@ export async function runPatternLayoutImageTool(sessionId: string) {
   return data;
 }
 
+/** Технический рисунок изделия (спереди/сзади), без лекал. */
+export async function runTechnicalFlatImageTool(sessionId: string) {
+  const { data } = await api.post(
+    `/sessions/${sessionId}/tools/technical-flat-image`,
+  );
+  return data;
+}
+
+/** Студийный образ на модели (детской или взрослой — по данным сессии). */
+export async function runKidStudioImageTool(sessionId: string) {
+  const { data } = await api.post(
+    `/sessions/${sessionId}/tools/kid-studio-image`,
+  );
+  return data;
+}
+
 export async function runConstructorStage2(sessionId: string) {
   const { data } = await api.post(
     `/sessions/${sessionId}/constructor-stage-2`,

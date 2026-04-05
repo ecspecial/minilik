@@ -34,6 +34,14 @@ export type PipelineResult = {
   generatedImageUrl?: string | null;
   /** Схема лекал по конструктору (ручной вызов, image API) */
   patternLayoutImageUrl?: string | null;
+  /** Текст подписей к лекалам (только выкройки, из чата) */
+  lekalaLayoutSheetText?: string | null;
+  /** @deprecated используйте lekalaLayoutSheetText */
+  patternTechPackSheetText?: string | null;
+  /** Технический рисунок изделия (вид спереди/сзади), без лекал */
+  technicalFlatImageUrl?: string | null;
+  /** Студийный lookbook (модель под изделие) — отдельная генерация, image API */
+  kidStudioImageUrl?: string | null;
   /** Итоговый текстовый пакет */
   finalPackage?: unknown;
   /** Интерпретатор лекал — текст */
