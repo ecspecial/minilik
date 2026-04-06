@@ -16,8 +16,10 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY in .env}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.4}
       OPENAI_IMAGE_MODEL: ${OPENAI_IMAGE_MODEL:-gpt-image-1.5}
-      DEMO_USER: ${DEMO_USER:-demo}
-      DEMO_PASS: ${DEMO_PASS:-demo}
+      AUTH_LOGIN_USER_1: ${AUTH_LOGIN_USER_1:?set AUTH_LOGIN_USER_1 in .env}
+      AUTH_LOGIN_PASS_1: ${AUTH_LOGIN_PASS_1:?set AUTH_LOGIN_PASS_1 in .env}
+      AUTH_LOGIN_USER_2: ${AUTH_LOGIN_USER_2:?set AUTH_LOGIN_USER_2 in .env}
+      AUTH_LOGIN_PASS_2: ${AUTH_LOGIN_PASS_2:?set AUTH_LOGIN_PASS_2 in .env}
       LOG_LEVEL: ${LOG_LEVEL:-}
       LOG_VERBOSE_AI: ${LOG_VERBOSE_AI:-}
     expose:

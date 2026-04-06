@@ -20,7 +20,7 @@ npm run start:dev
 
 API: `http://localhost:3000/api`
 
-Демо-вход: `DEMO_USER` / `DEMO_PASS` (по умолчанию `demo` / `demo`).
+Вход: задайте в `.env` бэкенда две пары **`AUTH_LOGIN_USER_1` / `AUTH_LOGIN_PASS_1`** и **`AUTH_LOGIN_USER_2` / `AUTH_LOGIN_PASS_2`** (значений по умолчанию нет). В Docker те же переменные обязательны в корневом `.env` для `docker compose`.
 
 ### 2. Фронтенд
 

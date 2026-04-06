@@ -30,7 +30,7 @@ describe('API (e2e)', () => {
   it('/api/auth/login rejects wrong password', () => {
     return request(app.getHttpServer())
       .post('/api/auth/login')
-      .send({ username: 'demo', password: 'wrong' })
+      .send({ username: 'e2e_user_a', password: 'wrong' })
       .expect(401);
   });
 });

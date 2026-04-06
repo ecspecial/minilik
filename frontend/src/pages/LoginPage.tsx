@@ -6,12 +6,12 @@ import { ANCHOR_STORAGE_KEY } from '../workspaceSections';
 
 export default function LoginPage() {
   const nav = useNavigate();
-  const [username, setUsername] = useState('demo');
+  const [username, setUsername] = useState('');
 
   useEffect(() => {
     document.title = 'MiniLik — вход';
   }, []);
-  const [password, setPassword] = useState('demo');
+  const [password, setPassword] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -48,9 +48,6 @@ export default function LoginPage() {
       </div>
       <div className="login-card">
         <h1 className="brand-title">Вход</h1>
-        <p className="muted" style={{ marginTop: 8 }}>
-          Введите логин и пароль, которые вам выдали для доступа к сервису.
-        </p>
         <form className="login-form" onSubmit={onSubmit}>
           <div className="login-field">
             <label htmlFor="login-username">Логин</label>
