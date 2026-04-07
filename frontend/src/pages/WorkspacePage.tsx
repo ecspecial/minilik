@@ -31,19 +31,9 @@ import api, {
   setAuthToken,
   uploadImages,
 } from '../api';
+import { exportedImageUrlField, sessionAssetRequestPath } from '../sessionPaths';
 
 type Analysis = Record<string, unknown>;
-
-/** Для выгрузки JSON: из относительного `/sessions/…` в `https://…/api/sessions/…`. */
-function exportedImageUrlField(im: { url?: string }): string | undefined {
-  if (!im.url) return undefined;
-  if (/^https?:\/\//i.test(im.url)) return im.url;
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
-  const path = im.url.startsWith('/api')
-    ? im.url
-    : `/api${im.url.startsWith('/') ? im.url : `/${im.url}`}`;
-  return `${origin}${path}`;
-}
 
 type SessionPayload = {
   id: string;
@@ -345,7 +335,12 @@ export default function WorkspacePage() {
         }
         if (im.url) {
           try {
-            const { data } = await api.get<Blob>(im.url, {
+            const path = sessionAssetRequestPath(im.url);
+            if (!path) {
+              if (!cancelled) next.push('');
+              continue;
+            }
+            const { data } = await api.get<Blob>(path, {
               responseType: 'blob',
             });
             if (cancelled) return;
@@ -756,6 +751,17 @@ export default function WorkspacePage() {
               <button
                 type="button"
                 className="secondary"
+                onClick={() =>
+                  sessionId &&
+                  nav(`/history#history-session-${sessionId}`)
+                }
+                disabled={!sessionId}
+              >
+                История данных
+              </button>
+              <button
+                type="button"
+                className="secondary"
                 onClick={exportCurrentSessionJson}
                 disabled={!session}
               >
@@ -764,9 +770,7 @@ export default function WorkspacePage() {
             </div>
           </div>
           <p className="session-history-hint">
-            Все ответы и загруженные фото сохраняются на сервере в JSON; ссылки на сгенерированные
-            картинки тоже лежат в сессии (если внешний URL перестанет открываться, используйте выгрузку
-            заранее или загрузку своих файлов).
+            Просмотр по разделам — в «История данных». Полный файл — «Скачать JSON».
           </p>
         </section>
 

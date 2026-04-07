@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import LandingPage from './pages/LandingPage';
 import LoginPage from './pages/LoginPage';
+import SessionHistoryPage from './pages/SessionHistoryPage';
 import WorkspacePage from './pages/WorkspacePage';
 
 export default function App() {
@@ -13,6 +14,7 @@ export default function App() {
       <Route path="/" element={<LandingPage />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/workspace" element={<WorkspacePage />} />
+      <Route path="/history" element={<SessionHistoryPage />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

@@ -1677,3 +1677,200 @@ textarea.pre.chat-msg-bubble--scroll {
   font-size: 0.875rem;
   color: var(--text-muted);
 }
+
+/* Ссылка в стиле вторичной кнопки (напр. «В кабинет» на странице истории) */
+a.secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 10px;
+  padding: 0.55rem 1.1rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  box-shadow: none;
+  text-decoration: none;
+}
+
+a.secondary:hover {
+  filter: brightness(1.06);
+}
+
+/* Страница «История данных» */
+.history-page-layout {
+  max-width: 1100px;
+}
+
+.history-page-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 280px) 1fr;
+  gap: 1.25rem;
+  align-items: start;
+}
+
+@media (max-width: 840px) {
+  .history-page-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.history-sidebar {
+  position: sticky;
+  top: 1rem;
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+}
+
+.history-sidebar-title {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+}
+
+.history-session-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.history-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.history-toolbar-id {
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  word-break: break-all;
+}
+
+.history-toolbar-meta {
+  margin: 0.35rem 0 0;
+  font-size: 0.85rem;
+}
+
+.history-block {
+  margin-bottom: 1.25rem;
+}
+
+.history-block-head {
+  margin-bottom: 0.75rem;
+}
+
+.history-step {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: 0.35rem;
+}
+
+.history-block-title {
+  font-size: 1.1rem;
+  margin: 0;
+}
+
+.history-block-sub {
+  margin: 0.35rem 0 0;
+  font-size: 0.9rem;
+}
+
+.history-subheading {
+  font-size: 0.95rem;
+  margin: 0 0 0.5rem;
+  color: var(--text-muted);
+}
+
+.history-block-body :last-child {
+  margin-bottom: 0;
+}
+
+.history-empty-hint {
+  margin: 0;
+}
+
+.history-pre {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  background: var(--bg-deep);
+  border: 1px solid var(--border);
+  font-size: 0.8rem;
+  overflow: auto;
+  max-height: 280px;
+}
+
+.history-img-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.75rem;
+}
+
+.history-img-wrap {
+  margin: 0;
+  text-align: center;
+}
+
+.history-img-wrap img {
+  max-width: 100%;
+  max-height: 200px;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.history-img-wrap--pipeline img {
+  max-height: min(420px, 55vh);
+}
+
+.history-pipeline-fig {
+  margin: 1rem 0 0;
+}
+
+.history-session-article {
+  margin-bottom: 2rem;
+  padding-bottom: 2rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.history-session-article:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.history-session-heading {
+  font-size: 1.15rem;
+  margin: 0 0 0.35rem;
+}
+
+.history-session-toolbar {
+  margin-bottom: 1rem;
+}
+
+.history-session-article--error {
+  margin-bottom: 1.5rem;
+}
+
+.history-session-error {
+  margin: 0.5rem 0 0;
+}
+
+/* Якорь в оглавлении страницы истории */
+a.session-history-pill--anchor {
+  text-decoration: none;
+  color: inherit;
+  box-sizing: border-box;
+}
+
+a.session-history-pill--anchor:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
